@@ -38,6 +38,8 @@ let
 in
 # TODO: Make it simple to compile between debug mode and release mode
 naersk'.buildPackage {
+  pname = bootloaderCrate;
+  version = "0.1.0";
   src = ../..;
 
   additionalCargoLock = "${rustToolchain}/lib/rustlib/src/rust/library/Cargo.lock";
