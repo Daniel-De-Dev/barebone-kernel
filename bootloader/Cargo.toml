@@ -1,0 +1,21 @@
+[package]
+name = "bootloader"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "bootloader"
+test = false
+bench = false
+
+[dependencies]
+log = "0.4.33"
+uefi = "0.39.0"
+
+[target.'cfg(target_arch = "riscv64")'.dependencies]
+sbi-rt = "0.0.4"
+riscv = "0.16.1"
+
+[features]
+default = ["qemu"]
+qemu = []

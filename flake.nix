@@ -1,5 +1,7 @@
 {
-  description = "A bare minimum flake using flake-parts and nixos-standards";
+  # TODO: Add VisionFive 2 Compilation (usart & sd)
+  # Todo: Add MangoPi Compilation
+  description = "Barebone RISC-V kernel targeting VisionFive 2 & MangoPi";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
@@ -12,6 +14,27 @@
         nixpkgs.follows = "nixpkgs";
       };
     };
+
+    fenix = {
+      url = "github:nix-community/fenix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
+    naersk = {
+      url = "github:nix-community/naersk";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.fenix.follows = "fenix";
+    };
+
+    src-uboot = {
+      url = "github:u-boot/u-boot";
+      flake = false;
+    };
+
+    src-opensbi = {
+      url = "github:riscv-software-src/opensbi";
+      flake = false;
+    };
   };
 
   outputs =
@@ -19,10 +42,12 @@
     flake-parts.lib.mkFlake { inherit inputs; } {
       systems = [ "x86_64-linux" ];
 
-      imports = [ inputs.standards.flakeModules.default ];
-
-      perSystem = _: {
-        # Local project configurations go here
-      };
+      imports = [
+        inputs.standards.flakeModules.default
+        ./nix/parts/firmware.nix
+        ./nix/parts/packages.nix
+        ./nix/parts/devshells.nix
+        ./nix/parts/qemu.nix
+      ];
     };
 }
