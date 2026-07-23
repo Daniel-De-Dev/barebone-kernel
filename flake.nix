@@ -48,6 +48,7 @@
         ./nix/parts/packages.nix
         ./nix/parts/devshells.nix
         ./nix/parts/qemu.nix
+        ./nix/parts/visionfive2.nix
       ];
     };
 }

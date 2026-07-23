@@ -18,14 +18,29 @@
     in
     {
       packages = rec {
-        bootloader = import ./bootloader.nix {
+        bootloader-debug = import ./bootloader.nix {
           inherit
             lib
             pkgs
             naersk'
             rustToolchain
             ;
+
+          release = false;
         };
+
+        bootloader-release = import ./bootloader.nix {
+          inherit
+            lib
+            pkgs
+            naersk'
+            rustToolchain
+            ;
+
+          release = true;
+        };
+
+        bootloader = bootloader-release;
         # TODO: Uncomment once ready to work on kernel and build properly defined
         # kernel = import ./kernel.nix { inherit pkgs naersk'; };
 

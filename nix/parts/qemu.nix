@@ -29,8 +29,9 @@ _: {
           https://uefi.org/specs/UEFI/2.11/03_Boot_Manager.html#removable-media-boot-behavior
           https://man7.org/linux/man-pages/man8/sfdisk.8.html
       */
-      espImage =
-        pkgs.runCommand "esp-image"
+      mkEspImage =
+        { name, bootloader }:
+        pkgs.runCommand "esp-image-${name}"
           {
             nativeBuildInputs = [
               pkgs.dosfstools
@@ -68,7 +69,7 @@ _: {
               "$partitionImage"
 
             install -Dm0644 \
-              "${config.packages.bootloader}/bin/BOOTRISCV64.EFI" \
+              "${bootloader}/bin/BOOTRISCV64.EFI" \
               "$espRoot/EFI/BOOT/BOOTRISCV64.EFI"
 
             mcopy \
@@ -86,6 +87,16 @@ _: {
               status=none
           '';
 
+      espImageDebug = mkEspImage {
+        name = "debug";
+        bootloader = config.packages.bootloader-debug;
+      };
+
+      espImageRelease = mkEspImage {
+        name = "release";
+        bootloader = config.packages.bootloader-release;
+      };
+
       /*
         Start QEMU with U-boot & opensbi
 
@@ -93,28 +104,43 @@ _: {
           https://docs.u-boot.org/en/stable/board/emulation/qemu-riscv.html
           https://github.com/riscv-software-src/opensbi/blob/master/docs/platform/qemu_virt.md
       */
-      runQemu = pkgs.writeShellApplication {
-        name = "run-qemu";
+      mkRunQemu =
+        { programName, espImage }:
+        pkgs.writeShellApplication {
+          name = programName;
 
-        runtimeInputs = [
-          pkgs.coreutils
-          pkgs.qemu
-        ];
+          runtimeInputs = [
+            pkgs.coreutils
+            pkgs.qemu
+          ];
 
-        runtimeEnv = {
-          ESP_IMAGE = espImage;
-          OPENSBI_IMAGE = config.packages.opensbi-qemu;
-          UBOOT_IMAGE = config.packages.uboot-qemu;
+          runtimeEnv = {
+            ESP_IMAGE = espImage;
+            OPENSBI_IMAGE = config.packages.opensbi-qemu;
+            UBOOT_IMAGE = config.packages.uboot-qemu;
+          };
+
+          text = lib.removePrefix "set -euo pipefail\n" (
+            builtins.readFile ./scripts/run-qemu.sh
+          );
         };
 
-        text = lib.removePrefix "set -euo pipefail\n" (
-          builtins.readFile ./scripts/run-qemu.sh
-        );
+      runQemuDebug = mkRunQemu {
+        programName = "run-qemu-debug";
+        espImage = espImageDebug;
+      };
+
+      runQemu = mkRunQemu {
+        programName = "run-qemu";
+        espImage = espImageRelease;
       };
     in
     {
       packages = {
-        esp-image = espImage;
+        esp-image-debug = espImageDebug;
+        esp-image = espImageRelease;
+
+        run-qemu-debug = runQemuDebug;
         run-qemu = runQemu;
       };
     };

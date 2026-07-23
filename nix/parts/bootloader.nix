@@ -22,10 +22,12 @@
   pkgs,
   naersk',
   rustToolchain,
+  release ? true,
   ...
 }:
 let
   bootloaderCrate = "bootloader";
+  buildProfile = if release then "release" else "debug";
   rustTarget = "riscv64gc-unknown-none-elf";
   efiEntryPoint = "efi_main";
   efiFileName = "BOOTRISCV64.EFI";
@@ -36,11 +38,12 @@ let
 
   elf2efi = "${pkgs.systemd.src}/tools/elf2efi.py";
 in
-# TODO: Make it simple to compile between debug mode and release mode
 naersk'.buildPackage {
-  pname = bootloaderCrate;
+  pname = "${bootloaderCrate}-${buildProfile}";
   version = "0.1.0";
   src = ../..;
+
+  inherit release;
 
   additionalCargoLock = "${rustToolchain}/lib/rustlib/src/rust/library/Cargo.lock";
 
