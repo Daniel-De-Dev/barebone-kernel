@@ -1,6 +1,6 @@
 { naersk', ... }:
 naersk'.buildPackage {
-  src = ./../..;
+  src = ./..;
   cargoBuildOptions =
     defaultOpts:
     defaultOpts

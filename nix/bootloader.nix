@@ -41,7 +41,7 @@ in
 naersk'.buildPackage {
   pname = "${bootloaderCrate}-${buildProfile}";
   version = "0.1.0";
-  src = ../..;
+  src = ./..;
 
   inherit release;
 

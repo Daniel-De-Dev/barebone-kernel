@@ -44,11 +44,11 @@
 
       imports = [
         inputs.standards.flakeModules.default
-        ./nix/parts/firmware.nix
-        ./nix/parts/packages.nix
-        ./nix/parts/devshells.nix
-        ./nix/parts/qemu.nix
-        ./nix/parts/visionfive2.nix
+        ./nix/firmware.nix
+        ./nix/packages.nix
+        ./nix/devshells.nix
+        ./nix/qemu.nix
+        ./nix/visionfive2.nix
       ];
     };
 }
