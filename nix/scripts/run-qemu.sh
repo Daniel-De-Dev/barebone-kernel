@@ -1,7 +1,6 @@
 set -euo pipefail
 
 esp_image="${ESP_IMAGE:?ESP_IMAGE must be set by Nix}"
-opensbi_image="${OPENSBI_IMAGE:?OPENSBI_IMAGE must be set by Nix}"
 uboot_image="${UBOOT_IMAGE:?UBOOT_IMAGE must be set by Nix}"
 
 usage() {
@@ -71,8 +70,8 @@ qemu_arguments=(
   -machine virt
   -m 1G
   -nographic
-  -bios "${opensbi_image}/fw_dynamic.bin"
-  -kernel "${uboot_image}/u-boot.bin"
+  -bios "${uboot_image}/u-boot-spl"
+  -device "loader,file=${uboot_image}/u-boot.itb,addr=0x80200000"
   -object "rng-random,filename=/dev/urandom,id=rng0"
   -device "virtio-rng-device,rng=rng0"
   -drive "file=${disk_image},format=raw,if=virtio"

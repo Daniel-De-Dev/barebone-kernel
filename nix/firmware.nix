@@ -119,9 +119,14 @@
 
             install -Dm0644 u-boot.bin "$out/u-boot.bin"
 
-            # VisionFive 2 uses the FIT image containing OpenSBI and U-Boot.
+            # FIT image containing OpenSBI and U-Boot
             if [ -f u-boot.itb ]; then
               install -Dm0644 u-boot.itb "$out/u-boot.itb"
+            fi
+
+            # QEMU's first-stage U-Boot SPL.
+            if [ -f spl/u-boot-spl ]; then
+              install -Dm0644 spl/u-boot-spl "$out/u-boot-spl"
             fi
 
             # VisionFive 2's first-stage U-Boot SPL.
@@ -140,9 +145,12 @@
         opensbi-qemu = opensbiQemu;
         opensbi-vf2 = opensbiVisionFive2;
 
+        # Qemu compiled and launched with SPL to better align with hardware
+        # bootsequence.
+        # https://www.qemu.org/docs/master/system/riscv/virt.html#running-u-boot
         uboot-qemu = mkUBoot {
           name = "qemu";
-          defconfig = "qemu-riscv64_smode_defconfig";
+          defconfig = "qemu-riscv64_spl_defconfig";
           opensbi = opensbiQemu;
         };
 
