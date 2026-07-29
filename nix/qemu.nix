@@ -7,7 +7,10 @@ _: {
       ...
     }:
     let
-      diskSizeMiB = 64;
+      # TODO: Move ESP generation to its own module file
+      # TODO: Make patch file re-adjust reserved space dynamically so these variables remain as source of truth
+      # TODO: Make the memory allocation dynamic?
+      diskSizeMiB = 2; # 8
       sectorSizeBytes = 512;
       partitionStartMiB = 1;
 

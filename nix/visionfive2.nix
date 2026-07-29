@@ -30,8 +30,11 @@ _: {
       };
     in
     {
-      # TODO: Implement distinct choice to boot trough usart and also flashing
+      # TODO: Implement a way between which boot option is intended
       # formatting an SD card
+      # Maybe also flash the QSPI NOR Flash memory? (WARN: Will be overwriting factory firmware)
+      # TODO: Look into emulating an ESP filesystem trough uart boot
+      # TODO: Look into increasing baudrate
       packages = {
         run-vf2 = runVisionFive2;
         run-vf2-debug = runVisionFive2Debug;

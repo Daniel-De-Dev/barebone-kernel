@@ -1,6 +1,4 @@
 {
-  # TODO: Add VisionFive 2 Compilation (usart & sd)
-  # Todo: Add MangoPi Compilation
   description = "Barebone RISC-V kernel targeting VisionFive 2 & MangoPi";
 
   inputs = {
@@ -31,6 +29,12 @@
       flake = false;
     };
 
+    # Allwinner D1 support does not exists for U-Boot.
+    src-uboot-d1 = {
+      url = "github:smaeul/u-boot/d1-wip";
+      flake = false;
+    };
+
     src-opensbi = {
       url = "github:riscv-software-src/opensbi";
       flake = false;
@@ -49,6 +53,7 @@
         ./nix/devshells.nix
         ./nix/qemu.nix
         ./nix/visionfive2.nix
+        ./nix/mangopi.nix
       ];
     };
 }

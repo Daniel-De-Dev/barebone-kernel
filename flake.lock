@@ -101,6 +101,7 @@
         "nixpkgs": "nixpkgs",
         "src-opensbi": "src-opensbi",
         "src-uboot": "src-uboot",
+        "src-uboot-d1": "src-uboot-d1",
         "standards": "standards"
       }
     },
@@ -149,6 +150,23 @@
       },
       "original": {
         "owner": "u-boot",
+        "repo": "u-boot",
+        "type": "github"
+      }
+    },
+    "src-uboot-d1": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1698742382,
+        "narHash": "sha256-POjP3PPuluYNTWWo5EUFWT0K3zYFWBFviPOGIhnejCA=",
+        "owner": "smaeul",
+        "repo": "u-boot",
+        "rev": "2e89b706f5c956a70c989cd31665f1429e9a0b48",
+        "type": "github"
+      },
+      "original": {
+        "owner": "smaeul",
+        "ref": "d1-wip",
         "repo": "u-boot",
         "type": "github"
       }
