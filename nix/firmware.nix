@@ -157,8 +157,7 @@
         this package does not build or install U-Boot SPL.
 
         Unlike `mkUBoot`, this build does not consume OpenSBI or construct a FIT
-        image. The FEL runner loads OpenSBI FW_JUMP, U-Boot proper, and U-Boot's
-        device tree into DRAM as separate binaries.
+        image. The FEL runner loads OpenSBI FW_JUMP and U-Boot proper.
 
         OpenSBI enters U-Boot proper in supervisor mode and passes it the address
         of the separately loaded device tree.
@@ -205,6 +204,11 @@
               exit 1
             fi
 
+            # TODO: Add extra checks and revisit to simplify scripts in project
+            # ramDiskAddress >= dramStart
+            # staging addresses are ordered and inside DRAM
+            # the disk size is a multiple of 1 MiB
+            # documented occupied ranges do not overlap
             if ((ramDiskEnd > dramEnd)); then
               echo "error: ESP reservation extends beyond MangoPi DRAM" >&2
               exit 1

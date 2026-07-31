@@ -29,7 +29,7 @@
       flake = false;
     };
 
-    # Allwinner D1 support does not exists for U-Boot.
+    # RISC-V Allwinner D1 support does not exists for mainline U-Boot.
     src-uboot-d1 = {
       url = "github:smaeul/u-boot/d1-wip";
       flake = false;

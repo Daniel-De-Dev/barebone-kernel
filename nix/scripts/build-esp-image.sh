@@ -136,6 +136,7 @@ while true; do
     "${partition_image}" \
     >/dev/null
 
+  # WARN: mcopy does not differ between failures which can result uncessary iteration
   if mcopy \
     -i "${partition_image}" \
     -s "${esp_root}/EFI" \
