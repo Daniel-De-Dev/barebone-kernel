@@ -2,6 +2,7 @@ set -euo pipefail
 
 esp_image="${ESP_IMAGE:?ESP_IMAGE must be set by Nix}"
 uboot_image="${UBOOT_IMAGE:?UBOOT_IMAGE must be set by Nix}"
+fit_load_address="${FIT_LOAD_ADDRESS:?FIT_LOAD_ADDRESS must be set by Nix}"
 
 usage() {
   cat <<'EOF'
@@ -71,7 +72,7 @@ qemu_arguments=(
   -m 1G
   -nographic
   -bios "${uboot_image}/u-boot-spl"
-  -device "loader,file=${uboot_image}/u-boot.itb,addr=0x80200000"
+  -device "loader,file=${uboot_image}/u-boot.itb,addr=${fit_load_address}"
   -object "rng-random,filename=/dev/urandom,id=rng0"
   -device "virtio-rng-device,rng=rng0"
   -drive "file=${disk_image},format=raw,if=virtio"

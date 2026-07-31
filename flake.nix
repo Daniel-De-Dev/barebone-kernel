@@ -54,6 +54,7 @@
         ./nix/qemu.nix
         ./nix/visionfive2.nix
         ./nix/mangopi.nix
+        ./nix/esp-image.nix
       ];
     };
 }

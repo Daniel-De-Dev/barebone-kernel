@@ -5,20 +5,18 @@
       riscvPkgs = pkgs.pkgsCross.riscv64;
       crossCompile = riscvPkgs.stdenv.cc.targetPrefix;
 
-      # TODO: Centralize pointer/address information so theyre named and documeted better
+      boards = import ./boards.nix { inherit lib; };
 
       /*
-        Build an OpenSBI dynamic firmware image.
+        Build an OpenSBI FW_DYNAMIC firmware image fir RISC-V.
 
-        `name` is used to give the package its pname.
-        `textStart` is the address at which OpenSBI is loaded:
-          - QEMU virt: 0x80000000
-          - VisionFive 2 / Allwinner D1: 0x40000000
+        `name` identifies the target and forms part of the package name.
 
-        References:
-          https://github.com/riscv-software-src/opensbi/blob/master/docs/firmware/fw.md
-          https://github.com/riscv-software-src/opensbi/blob/master/docs/platform/qemu_virt.md
-          https://doc-en.rvspace.org/VisionFive2/SWTRM/VisionFive2_SW_TRM/compiling_opensbi%20-%20vf2.html
+        `textStart` sets OpenSBI's FW_TEXT_START.
+
+        # TODO: Update permalinks (github.com/...) to align with flake.lock (for all links)
+        Sources:
+        https://github.com/riscv-software-src/opensbi/blob/c0f87f10d1bfb9e72a84ddfafb5604ee1bfe9d04/docs/firmware/fw_dynamic.md
       */
       mkOpenSBIDynamic =
         { name, textStart }:
@@ -35,12 +33,12 @@
 
           enableParallelBuilding = true;
 
-          makeFlags = [
-            "ARCH=riscv"
-            "CROSS_COMPILE=${crossCompile}"
-            "PLATFORM=generic"
-            "FW_TEXT_START=${textStart}"
-          ];
+          env = {
+            ARCH = "riscv";
+            CROSS_COMPILE = crossCompile;
+            PLATFORM = "generic";
+            FW_TEXT_START = textStart;
+          };
 
           installPhase = ''
             runHook preInstall
@@ -55,20 +53,26 @@
 
       opensbiQemu = mkOpenSBIDynamic {
         name = "qemu";
-        textStart = "0x80000000";
+        textStart = boards.qemu.opensbiAddress;
       };
 
       opensbiVisionFive2 = mkOpenSBIDynamic {
         name = "visionfive2";
-        textStart = "0x40000000";
+        textStart = boards.visionfive2.opensbiAddress;
       };
 
       /*
-        Build U-Boot using an OpenSBI FW_DYNAMIC image.
+        Build U-Boot for a RISC-V target using OpenSBI FW_DYNAMIC.
 
-        References:
-          https://docs.u-boot.org/en/stable/board/starfive/visionfive2.html
-          https://docs.u-boot.org/en/stable/board/emulation/qemu-riscv.html
+        `name` identifies the target and forms part of the package name.
+
+        `defconfig` is the U-Boot default configuration target passed to
+        `make`. It selects the board and its initial U-Boot configuration.
+
+        `opensbi` is a package providing `fw_dynamic.bin`. Its path is
+        exposed to the U-Boot build through `OPENSBI`, allowing configurations
+        that generate `u-boot.itb` to include OpenSBI and U-Boot proper in the
+        FIT image.
       */
       mkUBoot =
         {
@@ -100,12 +104,12 @@
 
           enableParallelBuilding = true;
 
-          # TODO: Switch to using env lik in the other (make sure to test)
-          makeFlags = [
-            "ARCH=riscv"
-            "CROSS_COMPILE=${crossCompile}"
-            "DTC=${lib.getExe pkgs.dtc}"
-          ];
+          env = {
+            ARCH = "riscv";
+            CROSS_COMPILE = crossCompile;
+            DTC = lib.getExe pkgs.dtc;
+            OPENSBI = "${opensbi}/fw_dynamic.bin";
+          };
 
           configurePhase = ''
             runHook preConfigure
@@ -114,8 +118,6 @@
 
             runHook postConfigure
           '';
-
-          env.OPENSBI = "${opensbi}/fw_dynamic.bin";
 
           installPhase = ''
             runHook preInstall
@@ -144,17 +146,33 @@
         };
 
       /*
-        MangoPi U-Boot proper only.
+        Build U-Boot proper for the MangoPi MQ Pro FEL boot path.
 
-        xfel already initializes DRAM, so this target deliberately does not
-        build or package SPL and does not require an fw image.
-        OpenSBI receives the separate DTB and jumps to u-boot proper
+        xfel is capable of initializes DRAM before loading the firmware, so
+        this package does not build or install U-Boot SPL.
+
+        Unlike `mkUBoot`, this build does not consume OpenSBI or construct a FIT
+        image. The FEL runner loads OpenSBI FW_JUMP, U-Boot proper, and U-Boot's
+        device tree into DRAM as separate binaries.
+
+        OpenSBI enters U-Boot proper in supervisor mode and passes it the address
+        of the separately loaded device tree.
+
+        `CONFIG_BLKMAP` allows the runner's in-memory EFI system partition to be
+        exposed to U-Boot as a block device.
+
+        The package contains only `u-boot.bin` and `u-boot.dtb`.
+
+        Sources:
+        https://xfel.xboot.org/en/command/ddr
+        https://docs.u-boot.org/en/stable/usage/blkmap.html
       */
       ubootMangoPi = riscvPkgs.stdenv.mkDerivation {
         pname = "u-boot-mangopi-fel";
         version = inputs.src-uboot-d1.shortRev or "dirty";
         src = inputs.src-uboot-d1;
 
+        # TODO: Update the allocated memory dynamically?
         patches = [ ./patches/mangopi-mq-pro-512m-memory.patch ];
 
         postPatch = ''
@@ -217,19 +235,22 @@
       };
 
       /*
-        xfel initializes the D1 DDR3 controller and loads the firmware stages
-        directly into DRAM.
+        Build OpenSBI FW_JUMP for the MangoPi MQ Pro FEL boot path.
 
-        xfel can begin execution at the OpenSBI address, but it does not provide
-        the DTB address through the RISC-V a1 register. Embed U-Boot's DTB into
-        OpenSBI so that OpenSBI can initialize the D1 platform and UART.
+        TODO: move this explination and the u-boot compilation into mangopi.nix
 
-        OpenSBI copies the embedded DTB to 0x44000000, passes that address to
-        U-Boot in a1, and then enters U-Boot at 0x42e00000.
+        `xfel exec` does not supply the FDT address expected in a1, so
+        `FW_FDT_PATH` embeds U-Boot's DTB. OpenSBI uses this DTB for generic
+        platform discovery, relocates it to `FW_JUMP_FDT_ADDR`, and passes
+        that address to U-Boot proper.
 
-        References:
-          https://xfel.xboot.org/en/reference/ddr-types
-          https://github.com/riscv-software-src/opensbi/blob/master/docs/firmware/fw.md
+        `FW_TEXT_START` sets OpenSBI's link address, chosen to match its FEL
+        load address. `FW_JUMP_ADDR` selects U-Boot proper as the next-stage
+        entry point.
+
+        Sources:
+        https://xfel.xboot.org/en/command/exec
+        https://github.com/riscv-software-src/opensbi/blob/c0f87f10d1bfb9e72a84ddfafb5604ee1bfe9d04/docs/firmware/fw_jump.md
       */
       opensbiMangoPiFel = riscvPkgs.stdenv.mkDerivation {
         pname = "opensbi-jump-mangopi-fel";
@@ -244,16 +265,16 @@
 
         enableParallelBuilding = true;
 
-        makeFlags = [
-          "ARCH=riscv"
-          "CROSS_COMPILE=${crossCompile}"
-          "PLATFORM=generic"
-          "FW_JUMP=y"
-          "FW_TEXT_START=0x40000000"
-          "FW_JUMP_ADDR=0x42e00000"
-          "FW_FDT_PATH=${ubootMangoPi}/u-boot.dtb"
-          "FW_JUMP_FDT_ADDR=0x44000000"
-        ];
+        env = {
+          ARCH = "riscv";
+          CROSS_COMPILE = crossCompile;
+          PLATFORM = "generic";
+          FW_JUMP = "y";
+          FW_TEXT_START = boards.mangopi.opensbiAddress;
+          FW_JUMP_ADDR = boards.mangopi.ubootAddress;
+          FW_FDT_PATH = "${ubootMangoPi}/u-boot.dtb";
+          FW_JUMP_FDT_ADDR = boards.mangopi.fdtAddress;
+        };
 
         installPhase = ''
           runHook preInstall
@@ -272,12 +293,6 @@
         opensbi-vf2 = opensbiVisionFive2;
         opensbi-mangopi-fel = opensbiMangoPiFel;
 
-        /*
-          QEMU is compiled and launched with SPL to better align with the
-          hardware boot sequence.
-
-          https://www.qemu.org/docs/master/system/riscv/virt.html#running-u-boot
-        */
         uboot-qemu = mkUBoot {
           name = "qemu";
           defconfig = "qemu-riscv64_spl_defconfig";

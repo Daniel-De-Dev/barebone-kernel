@@ -2,6 +2,10 @@ _: {
   perSystem =
     { config, pkgs, ... }:
     let
+      # TODO: Write boot process documentation
+      # https://doc-en.rvspace.org/VisionFive2/SWTRM/VisionFive2_SW_TRM/compiling_opensbi%20-%20vf2.html
+      # https://docs.u-boot.org/en/stable/board/starfive/visionfive2.html
+
       mkRunVisionFive2 =
         { programName, bootloader }:
         pkgs.writeShellApplication {

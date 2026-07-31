@@ -1,5 +1,7 @@
 opensbi_image="${MANGOPI_OPENSBI_IMAGE:?MANGOPI_OPENSBI_IMAGE must be set by Nix}"
+opensbi_address="${MANGOPI_OPENSBI_ADDRESS:?MANGOPI_OPENSBI_ADDRESS must be set by Nix}"
 uboot_image="${MANGOPI_UBOOT_IMAGE:?MANGOPI_UBOOT_IMAGE must be set by Nix}"
+uboot_address="${MANGOPI_UBOOT_ADDRESS:?MANGOPI_UBOOT_ADDRESS must be set by Nix}"
 disk_image="${MANGOPI_DISK_IMAGE:?MANGOPI_DISK_IMAGE must be set by Nix}"
 ram_disk_address="${MANGOPI_RAM_DISK_ADDRESS:?MANGOPI_RAM_DISK_ADDRESS must be set by Nix}"
 ram_disk_capacity_bytes="${MANGOPI_RAM_DISK_CAPACITY_BYTES:?MANGOPI_RAM_DISK_CAPACITY_BYTES must be set by Nix}"
@@ -86,18 +88,17 @@ fi
 echo "Initializing D1 DDR..."
 xfel ddr d1
 
-# TODO: Make the pointers fetched from centralized source
-echo "Uploading U-Boot proper to 0x42e00000..."
-xfel write 0x42e00000 "${uboot_image}"
+echo "Uploading U-Boot proper to ${uboot_address}..."
+xfel write "${uboot_address}" "${uboot_image}"
 
 echo "Uploading the ${disk_size_bytes}-byte ESP disk to ${ram_disk_address}..."
 xfel write "${ram_disk_address}" "${disk_image}"
 
-echo "Uploading OpenSBI FW_JUMP to 0x40000000..."
-xfel write 0x40000000 "${opensbi_image}"
+echo "Uploading OpenSBI FW_JUMP to ${opensbi_address}..."
+xfel write "${opensbi_address}" "${opensbi_image}"
 
 echo "Starting OpenSBI..."
-xfel exec 0x40000000
+xfel exec "${opensbi_address}"
 
 echo "Attaching to U-Boot on ${serial_device}..."
 exec tio \
