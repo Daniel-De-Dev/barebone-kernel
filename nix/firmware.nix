@@ -1,6 +1,11 @@
 { inputs, ... }: {
   perSystem =
-    { lib, pkgs, ... }:
+    {
+      lib,
+      pkgs,
+      config,
+      ...
+    }:
     let
       riscvPkgs = pkgs.pkgsCross.riscv64;
       crossCompile = riscvPkgs.stdenv.cc.targetPrefix;
@@ -14,7 +19,7 @@
 
         `textStart` sets OpenSBI's FW_TEXT_START.
 
-        # TODO: Update permalinks (github.com/...) to align with flake.lock (for all links)
+        # TODO: Update permalinks (github.com/...) to align with flake.lock (for all links, update flake before)
         Sources:
         https://github.com/riscv-software-src/opensbi/blob/c0f87f10d1bfb9e72a84ddfafb5604ee1bfe9d04/docs/firmware/fw_dynamic.md
       */
@@ -53,12 +58,12 @@
 
       opensbiQemu = mkOpenSBIDynamic {
         name = "qemu";
-        textStart = boards.qemu.opensbiAddress;
+        textStart = boards.toHex boards.qemu.opensbiAddress;
       };
 
       opensbiVisionFive2 = mkOpenSBIDynamic {
         name = "visionfive2";
-        textStart = boards.visionfive2.opensbiAddress;
+        textStart = boards.toHex boards.visionfive2.opensbiAddress;
       };
 
       /*
@@ -163,76 +168,117 @@
 
         The package contains only `u-boot.bin` and `u-boot.dtb`.
 
+        # TODO: Document the dtsi step
+        # TODO: See what of the documentation belongs in mangopi.nix
+
         Sources:
         https://xfel.xboot.org/en/command/ddr
         https://docs.u-boot.org/en/stable/usage/blkmap.html
       */
-      ubootMangoPi = riscvPkgs.stdenv.mkDerivation {
-        pname = "u-boot-mangopi-fel";
-        version = inputs.src-uboot-d1.shortRev or "dirty";
-        src = inputs.src-uboot-d1;
+      mkUBootMangoPi =
+        { name, espImage }:
+        riscvPkgs.stdenv.mkDerivation {
+          pname = "u-boot-mangopi-fel-${name}";
+          version = inputs.src-uboot-d1.shortRev or "dirty";
+          src = inputs.src-uboot-d1;
 
-        # TODO: Update the allocated memory dynamically?
-        patches = [ ./patches/mangopi-mq-pro-512m-memory.patch ];
+          postPatch = ''
+            patchShebangs scripts tools
 
-        postPatch = ''
-          patchShebangs scripts tools
-        '';
+            substituteInPlace \
+              arch/riscv/dts/sun20i-d1-mangopi-mq-pro.dts \
+              --replace-fail \
+                '#include "sun20i-common-regulators.dtsi"' \
+                $'#include "sun20i-common-regulators.dtsi"\n#include "barebone-fel-memory.dtsi"'
 
-        nativeBuildInputs = with pkgs; [
-          bc
-          bison
-          flex
-          (python3.withPackages (ps: [
-            ps.libfdt
-            ps.setuptools_80
-          ]))
-          stdenv.cc
-          perl
-        ];
+            espSizeBytes=$(<"${espImage}/disk-size-bytes")
+            ramDiskEnd=$((
+              ${toString boards.mangopi.ramDiskAddress} + espSizeBytes
+            ))
+            dramEnd=$((
+              ${toString boards.mangopi.dramStart}
+              + ${toString boards.mangopi.dramSize}
+            ))
 
-        buildInputs = with pkgs; [
-          openssl
-          gnutls
-        ];
+            if ((espSizeBytes <= 0)); then
+              echo "error: ESP disk image size must be greater than zero" >&2
+              exit 1
+            fi
 
-        enableParallelBuilding = true;
+            if ((ramDiskEnd > dramEnd)); then
+              echo "error: ESP reservation extends beyond MangoPi DRAM" >&2
+              exit 1
+            fi
 
-        env = {
-          ARCH = "riscv";
-          CROSS_COMPILE = crossCompile;
-          DTC = lib.getExe pkgs.dtc;
+            printf -v ramDiskSize '0x%08x' "$espSizeBytes"
+
+            install -Dm0644 \
+              ${./dts/mangopi-fel-memory.dtsi.in} \
+              arch/riscv/dts/barebone-fel-memory.dtsi
+
+            substituteInPlace arch/riscv/dts/barebone-fel-memory.dtsi \
+              --replace-fail '@dramUnitAddress@' '${lib.toHexString boards.mangopi.dramStart}' \
+              --replace-fail '@dramStart@' '${boards.toHex boards.mangopi.dramStart}' \
+              --replace-fail '@dramSize@' '${boards.toHex boards.mangopi.dramSize}' \
+              --replace-fail '@ramDiskUnitAddress@' '${lib.toHexString boards.mangopi.ramDiskAddress}' \
+              --replace-fail '@ramDiskAddress@' '${boards.toHex boards.mangopi.ramDiskAddress}' \
+              --replace-fail '@ramDiskSize@' "$ramDiskSize"
+          '';
+
+          nativeBuildInputs = with pkgs; [
+            bc
+            bison
+            flex
+            (python3.withPackages (ps: [
+              ps.libfdt
+              ps.setuptools_80
+            ]))
+            stdenv.cc
+            perl
+          ];
+
+          buildInputs = with pkgs; [
+            openssl
+            gnutls
+          ];
+
+          enableParallelBuilding = true;
+
+          env = {
+            ARCH = "riscv";
+            CROSS_COMPILE = crossCompile;
+            DTC = lib.getExe pkgs.dtc;
+          };
+
+          buildFlags = [
+            "u-boot.bin"
+            "u-boot.dtb"
+          ];
+
+          configurePhase = ''
+            runHook preConfigure
+
+            make -j"$NIX_BUILD_CORES" mangopi_mq_pro_defconfig
+
+            ./scripts/config --enable CONFIG_BLKMAP
+
+            runHook postConfigure
+          '';
+
+          installPhase = ''
+            runHook preInstall
+
+            install -Dm0644 \
+              u-boot.bin \
+              "$out/u-boot.bin"
+
+            install -Dm0644 \
+              u-boot.dtb \
+              "$out/u-boot.dtb"
+
+            runHook postInstall
+          '';
         };
-
-        buildFlags = [
-          "u-boot.bin"
-          "u-boot.dtb"
-        ];
-
-        configurePhase = ''
-          runHook preConfigure
-
-          make -j"$NIX_BUILD_CORES" mangopi_mq_pro_defconfig
-
-          ./scripts/config --enable CONFIG_BLKMAP
-
-          runHook postConfigure
-        '';
-
-        installPhase = ''
-          runHook preInstall
-
-          install -Dm0644 \
-            u-boot.bin \
-            "$out/u-boot.bin"
-
-          install -Dm0644 \
-            u-boot.dtb \
-            "$out/u-boot.dtb"
-
-          runHook postInstall
-        '';
-      };
 
       /*
         Build OpenSBI FW_JUMP for the MangoPi MQ Pro FEL boot path.
@@ -252,45 +298,68 @@
         https://xfel.xboot.org/en/command/exec
         https://github.com/riscv-software-src/opensbi/blob/c0f87f10d1bfb9e72a84ddfafb5604ee1bfe9d04/docs/firmware/fw_jump.md
       */
-      opensbiMangoPiFel = riscvPkgs.stdenv.mkDerivation {
-        pname = "opensbi-jump-mangopi-fel";
-        version = inputs.src-opensbi.shortRev or "dirty";
-        src = inputs.src-opensbi;
+      mkOpenSBIMangoPiFel =
+        { name, uboot }:
+        riscvPkgs.stdenv.mkDerivation {
+          pname = "opensbi-jump-mangopi-fel-${name}";
+          version = inputs.src-opensbi.shortRev or "dirty";
+          src = inputs.src-opensbi;
 
-        nativeBuildInputs = [ pkgs.python3 ];
+          nativeBuildInputs = [ pkgs.python3 ];
 
-        postPatch = ''
-          patchShebangs scripts
-        '';
+          postPatch = ''
+            patchShebangs scripts
+          '';
 
-        enableParallelBuilding = true;
+          enableParallelBuilding = true;
 
-        env = {
-          ARCH = "riscv";
-          CROSS_COMPILE = crossCompile;
-          PLATFORM = "generic";
-          FW_JUMP = "y";
-          FW_TEXT_START = boards.mangopi.opensbiAddress;
-          FW_JUMP_ADDR = boards.mangopi.ubootAddress;
-          FW_FDT_PATH = "${ubootMangoPi}/u-boot.dtb";
-          FW_JUMP_FDT_ADDR = boards.mangopi.fdtAddress;
+          env = {
+            ARCH = "riscv";
+            CROSS_COMPILE = crossCompile;
+            PLATFORM = "generic";
+            FW_JUMP = "y";
+            FW_TEXT_START = boards.toHex boards.mangopi.opensbiAddress;
+            FW_JUMP_ADDR = boards.toHex boards.mangopi.ubootAddress;
+            FW_FDT_PATH = "${uboot}/u-boot.dtb";
+            FW_JUMP_FDT_ADDR = boards.toHex boards.mangopi.fdtAddress;
+          };
+
+          installPhase = ''
+            runHook preInstall
+
+            install -Dm0644 \
+              build/platform/generic/firmware/fw_jump.bin \
+              "$out/fw_jump.bin"
+
+            runHook postInstall
+          '';
         };
 
-        installPhase = ''
-          runHook preInstall
+      ubootMangoPiDebug = mkUBootMangoPi {
+        name = "debug";
+        espImage = config.packages.esp-image-debug;
+      };
 
-          install -Dm0644 \
-            build/platform/generic/firmware/fw_jump.bin \
-            "$out/fw_jump.bin"
+      ubootMangoPi = mkUBootMangoPi {
+        name = "release";
+        espImage = config.packages.esp-image;
+      };
 
-          runHook postInstall
-        '';
+      opensbiMangoPiFelDebug = mkOpenSBIMangoPiFel {
+        name = "debug";
+        uboot = ubootMangoPiDebug;
+      };
+
+      opensbiMangoPiFel = mkOpenSBIMangoPiFel {
+        name = "release";
+        uboot = ubootMangoPi;
       };
     in
     {
       packages = {
         opensbi-qemu = opensbiQemu;
         opensbi-vf2 = opensbiVisionFive2;
+        opensbi-mangopi-fel-debug = opensbiMangoPiFelDebug;
         opensbi-mangopi-fel = opensbiMangoPiFel;
 
         uboot-qemu = mkUBoot {
@@ -305,6 +374,7 @@
           opensbi = opensbiVisionFive2;
         };
 
+        uboot-mangopi-debug = ubootMangoPiDebug;
         uboot-mangopi = ubootMangoPi;
       };
     };

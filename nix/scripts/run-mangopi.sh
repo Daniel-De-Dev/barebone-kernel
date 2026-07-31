@@ -3,8 +3,8 @@ opensbi_address="${MANGOPI_OPENSBI_ADDRESS:?MANGOPI_OPENSBI_ADDRESS must be set 
 uboot_image="${MANGOPI_UBOOT_IMAGE:?MANGOPI_UBOOT_IMAGE must be set by Nix}"
 uboot_address="${MANGOPI_UBOOT_ADDRESS:?MANGOPI_UBOOT_ADDRESS must be set by Nix}"
 disk_image="${MANGOPI_DISK_IMAGE:?MANGOPI_DISK_IMAGE must be set by Nix}"
+disk_size_file="${MANGOPI_DISK_SIZE_FILE:?MANGOPI_DISK_SIZE_FILE must be set by Nix}"
 ram_disk_address="${MANGOPI_RAM_DISK_ADDRESS:?MANGOPI_RAM_DISK_ADDRESS must be set by Nix}"
-ram_disk_capacity_bytes="${MANGOPI_RAM_DISK_CAPACITY_BYTES:?MANGOPI_RAM_DISK_CAPACITY_BYTES must be set by Nix}"
 tio_script="${MANGOPI_TIO_SCRIPT:?MANGOPI_TIO_SCRIPT must be set by Nix}"
 
 usage() {
@@ -58,7 +58,12 @@ if [[ ! -f ${disk_image} ]]; then
   usage_error "ESP disk image does not exist: ${disk_image}"
 fi
 
+if [[ ! -f ${disk_size_file} ]]; then
+  usage_error "ESP disk size metadata does not exist: ${disk_size_file}"
+fi
+
 disk_size_bytes=$(stat -c '%s' "${disk_image}")
+reserved_size_bytes=$(<"${disk_size_file}")
 
 if ((disk_size_bytes == 0)); then
   usage_error "ESP disk image is empty"
@@ -68,9 +73,9 @@ if ((disk_size_bytes % 512 != 0)); then
   usage_error "ESP disk image size must be a multiple of 512 bytes"
 fi
 
-if ((disk_size_bytes > ram_disk_capacity_bytes)); then
+if ((disk_size_bytes != reserved_size_bytes)); then
   usage_error \
-    "ESP disk image (${disk_size_bytes} bytes) exceeds the reserved RAM disk region (${ram_disk_capacity_bytes} bytes)"
+    "ESP disk image (${disk_size_bytes} bytes) does not match the DTB reservation (${reserved_size_bytes} bytes)"
 fi
 
 disk_blocks=$((disk_size_bytes / 512))

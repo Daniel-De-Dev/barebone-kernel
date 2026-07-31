@@ -34,7 +34,7 @@ _: {
           runtimeEnv = {
             ESP_IMAGE = espImage;
             UBOOT_IMAGE = config.packages.uboot-qemu;
-            FIT_LOAD_ADDRESS = boards.qemu.fitLoadAddress;
+            FIT_LOAD_ADDRESS = boards.toHex boards.qemu.fitLoadAddress;
           };
 
           text = lib.removePrefix "set -euo pipefail\n" (

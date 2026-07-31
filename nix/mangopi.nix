@@ -9,11 +9,13 @@ _: {
     let
       boards = import ./boards.nix { inherit lib; };
 
-      # TODO: Make patch file re-adjust reserved space dynamically so these variables remain as source of truth
-      ramDiskCapacityBytes = 64 * 1024 * 1024;
-
       mkRunMangoPi =
-        { programName, espImage }:
+        {
+          programName,
+          espImage,
+          opensbi,
+          uboot,
+        }:
         pkgs.writeShellApplication {
           name = programName;
 
@@ -24,14 +26,14 @@ _: {
           ];
 
           runtimeEnv = {
-            MANGOPI_OPENSBI_IMAGE = "${config.packages.opensbi-mangopi-fel}/fw_jump.bin";
-            MANGOPI_OPENSBI_ADDRESS = boards.mangopi.opensbiAddress;
-            MANGOPI_UBOOT_IMAGE = "${config.packages.uboot-mangopi}/u-boot.bin";
-            MANGOPI_UBOOT_ADDRESS = boards.mangopi.ubootAddress;
+            MANGOPI_OPENSBI_IMAGE = "${opensbi}/fw_jump.bin";
+            MANGOPI_OPENSBI_ADDRESS = boards.toHex boards.mangopi.opensbiAddress;
+            MANGOPI_UBOOT_IMAGE = "${uboot}/u-boot.bin";
+            MANGOPI_UBOOT_ADDRESS = boards.toHex boards.mangopi.ubootAddress;
             MANGOPI_DISK_IMAGE = "${espImage}/disk.img";
-            MANGOPI_RAM_DISK_ADDRESS = boards.mangopi.ramDiskAddress;
-            MANGOPI_RAM_DISK_CAPACITY_BYTES = toString ramDiskCapacityBytes;
-            MANGOPI_EFI_LOAD_ADDRESS = boards.mangopi.efiLoadAddress;
+            MANGOPI_DISK_SIZE_FILE = "${espImage}/disk-size-bytes";
+            MANGOPI_RAM_DISK_ADDRESS = boards.toHex boards.mangopi.ramDiskAddress;
+            MANGOPI_EFI_LOAD_ADDRESS = boards.toHex boards.mangopi.efiLoadAddress;
             MANGOPI_TIO_SCRIPT = ./scripts/run-mangopi.lua;
           };
 
@@ -45,11 +47,15 @@ _: {
         run-mangopi-debug = mkRunMangoPi {
           programName = "run-mangopi-debug";
           espImage = config.packages.esp-image-debug;
+          opensbi = config.packages.opensbi-mangopi-fel-debug;
+          uboot = config.packages.uboot-mangopi-debug;
         };
 
         run-mangopi = mkRunMangoPi {
           programName = "run-mangopi";
           espImage = config.packages.esp-image;
+          opensbi = config.packages.opensbi-mangopi-fel;
+          uboot = config.packages.uboot-mangopi;
         };
       };
     };

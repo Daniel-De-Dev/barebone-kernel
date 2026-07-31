@@ -1,0 +1,17 @@
+/ {
+	memory@@dramUnitAddress@ {
+		device_type = "memory";
+		reg = <@dramStart@ @dramSize@>;
+	};
+
+	reserved-memory {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		fel-esp@@ramDiskUnitAddress@ {
+			reg = <@ramDiskAddress@ @ramDiskSize@>;
+			no-map;
+		};
+	};
+};
