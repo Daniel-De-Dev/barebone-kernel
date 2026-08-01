@@ -43,7 +43,6 @@ _: {
     {
       packages = {
         # TODO: Define SD flashing (Should be the same process as for vf2?)
-        # TODO: Also flash memory flashing (if it has)
         run-mangopi-debug = mkRunMangoPi {
           programName = "run-mangopi-debug";
           espImage = config.packages.esp-image-debug;
