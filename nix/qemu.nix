@@ -17,9 +17,9 @@ _: {
       /*
         Start QEMU with U-Boot and OpenSBI.
 
-        References:
-          https://docs.u-boot.org/en/stable/board/emulation/qemu-riscv.html
-          https://github.com/riscv-software-src/opensbi/blob/master/docs/platform/qemu_virt.md
+        Sources:
+        https://docs.u-boot.org/en/stable/board/emulation/qemu-riscv.html
+        https://github.com/riscv-software-src/opensbi/blob/master/docs/platform/qemu_virt.md
       */
       mkRunQemu =
         { programName, espImage }:

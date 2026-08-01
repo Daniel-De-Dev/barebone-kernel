@@ -3,7 +3,7 @@ set -euo pipefail
 
 # TODO: See if there are more standardized ways to define usage and parse
 # arguments across sh files (decent amount of duplciated boilerplate)
-# TODO: standardize also error handling
+# TODO: standardize also error handling across scripts
 # TODO: review and cleanup the scripts in the project
 usage() {
   cat <<'EOF'

@@ -12,10 +12,10 @@
   The `uefi` crate provides the UEFI ABI and entry point, while
   `elf2efi.py` does the ELF-to-PE/COFF conversion.
 
-  References:
-    https://discourse.llvm.org/t/rfc-uefi-driver-support-uefi-target/73261
-    https://github.com/systemd/systemd/blob/main/tools/elf2efi.py
-    https://uefi.org/specs/UEFI/2.11/02_Overview.html#uefi-images
+  Sources:
+  https://discourse.llvm.org/t/rfc-uefi-driver-support-uefi-target/73261
+  https://github.com/systemd/systemd/blob/main/tools/elf2efi.py
+  https://uefi.org/specs/UEFI/2.11/02_Overview.html#uefi-images
 */
 {
   lib,

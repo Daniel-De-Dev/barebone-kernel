@@ -38,7 +38,7 @@ _: {
       # formatting an SD card
       # Maybe also flash the QSPI NOR Flash memory? (WARN: Will be overwriting factory firmware)
       # TODO: Look into emulating an ESP filesystem trough uart boot
-      # TODO: Look into increasing baudrate
+      # TODO: Look into increasing baudrate to increase upload speeds
       packages = {
         run-vf2 = runVisionFive2;
         run-vf2-debug = runVisionFive2Debug;

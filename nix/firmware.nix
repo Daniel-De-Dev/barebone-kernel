@@ -190,6 +190,11 @@
                 '#include "sun20i-common-regulators.dtsi"' \
                 $'#include "sun20i-common-regulators.dtsi"\n#include "barebone-fel-memory.dtsi"'
 
+
+            # TODO: See if ramDiskSize can statically defined in nix and it's
+            # checked by the esp generator instead that asserts its size within
+            # the statically allocated size (since FEL upload != allocated size)
+            # resulting in allocated size can be larger without increasing upload time
             espSizeBytes=$(<"${espImage}/disk-size-bytes")
             ramDiskEnd=$((
               ${toString boards.mangopi.ramDiskAddress} + espSizeBytes
