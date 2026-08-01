@@ -2,10 +2,17 @@ _: {
   perSystem =
     { config, pkgs, ... }:
     let
-      # TODO: Write boot process documentation
-      # https://doc-en.rvspace.org/VisionFive2/SWTRM/VisionFive2_SW_TRM/compiling_opensbi%20-%20vf2.html
-      # https://docs.u-boot.org/en/stable/board/starfive/visionfive2.html
+      /*
+        In UART boot mode, the VisionFive 2 BootROM receives U-Boot SPL through
+        XMODEM-1K. The SPL initializes DRAM and receives `u-boot.itb` through
+        YMODEM; the FIT contains OpenSBI and U-Boot proper. Once U-Boot starts,
+        the runner transfers the EFI bootloader through YMODEM and launches it
+        with `bootefi`.
 
+        Sources:
+        https://doc-en.rvspace.org/VisionFive2/SWTRM/VisionFive2_SW_TRM/compiling_opensbi%20-%20vf2.html
+        https://docs.u-boot.org/en/stable/board/starfive/visionfive2.html
+      */
       mkRunVisionFive2 =
         { programName, bootloader }:
         pkgs.writeShellApplication {
@@ -37,7 +44,7 @@ _: {
       # TODO: Implement a way between which boot option is intended
       # formatting an SD card
       # Maybe also flash the QSPI NOR Flash memory? (WARN: Will be overwriting factory firmware)
-      # TODO: Look into emulating an ESP filesystem trough uart boot
+      # TODO: Look into emulating an ESP filesystem trough uart boot (update doc at top of file)
       # TODO: Look into increasing baudrate to increase upload speeds
       packages = {
         run-vf2 = runVisionFive2;

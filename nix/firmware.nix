@@ -13,11 +13,13 @@
       boards = import ./boards.nix { inherit lib; };
 
       /*
-        Build an OpenSBI FW_DYNAMIC firmware image fir RISC-V.
+        Build an OpenSBI FW_DYNAMIC firmware image for RISC-V.
 
         `name` identifies the target and forms part of the package name.
 
         `textStart` sets OpenSBI's FW_TEXT_START.
+
+        The package installs `fw_dynamic.bin`.
 
         # TODO: Update permalinks (github.com/...) to align with flake.lock (for all links, update flake before)
         Sources:
@@ -78,6 +80,9 @@
         exposed to the U-Boot build through `OPENSBI`, allowing configurations
         that generate `u-boot.itb` to include OpenSBI and U-Boot proper in the
         FIT image.
+
+        The package installs `u-boot.bin` and any supported FIT or SPL artifacts
+        emitted by the selected configuration.
       */
       mkUBoot =
         {
@@ -129,17 +134,15 @@
 
             install -Dm0644 u-boot.bin "$out/u-boot.bin"
 
-            # FIT image containing OpenSBI and U-Boot
+            # Install optional artifacts emitted by the selected defconfig.
             if [ -f u-boot.itb ]; then
               install -Dm0644 u-boot.itb "$out/u-boot.itb"
             fi
 
-            # QEMU's first-stage U-Boot SPL.
             if [ -f spl/u-boot-spl ]; then
               install -Dm0644 spl/u-boot-spl "$out/u-boot-spl"
             fi
 
-            # VisionFive 2's first-stage U-Boot SPL.
             if [ -f spl/u-boot-spl.bin.normal.out ]; then
               install -Dm0644 \
                 spl/u-boot-spl.bin.normal.out \
@@ -151,28 +154,15 @@
         };
 
       /*
-        Build U-Boot proper for the MangoPi MQ Pro FEL boot path.
+        Build U-Boot proper and its DTB for the MangoPi MQ Pro FEL runner.
 
-        xfel is capable of initializes DRAM before loading the firmware, so
-        this package does not build or install U-Boot SPL.
+        `name` identifies the build variant and forms part of the package name.
 
-        Unlike `mkUBoot`, this build does not consume OpenSBI or construct a FIT
-        image. The FEL runner loads OpenSBI FW_JUMP and U-Boot proper.
+        `espImage` provides the exact disk size used to generate a DT include
+        that describes DRAM and reserves the in-memory ESP range.
 
-        OpenSBI enters U-Boot proper in supervisor mode and passes it the address
-        of the separately loaded device tree.
-
-        `CONFIG_BLKMAP` allows the runner's in-memory EFI system partition to be
-        exposed to U-Boot as a block device.
-
-        The package contains only `u-boot.bin` and `u-boot.dtb`.
-
-        # TODO: Document the dtsi step
-        # TODO: See what of the documentation belongs in mangopi.nix
-
-        Sources:
-        https://xfel.xboot.org/en/command/ddr
-        https://docs.u-boot.org/en/stable/usage/blkmap.html
+        The build enables CONFIG_BLKMAP and installs `u-boot.bin` and
+        `u-boot.dtb`.
       */
       mkUBootMangoPi =
         { name, espImage }:
@@ -290,22 +280,14 @@
         };
 
       /*
-        Build OpenSBI FW_JUMP for the MangoPi MQ Pro FEL boot path.
+        Build OpenSBI FW_JUMP for the MangoPi MQ Pro FEL runner.
 
-        TODO: move this explination and the u-boot compilation into mangopi.nix
+        `name` identifies the build variant and forms part of the package name.
 
-        `xfel exec` does not supply the FDT address expected in a1, so
-        `FW_FDT_PATH` embeds U-Boot's DTB. OpenSBI uses this DTB for generic
-        platform discovery, relocates it to `FW_JUMP_FDT_ADDR`, and passes
-        that address to U-Boot proper.
+        `uboot` provides the DTB embedded through `FW_FDT_PATH`. Firmware and
+        next-stage addresses come from the MangoPi board map.
 
-        `FW_TEXT_START` sets OpenSBI's link address, chosen to match its FEL
-        load address. `FW_JUMP_ADDR` selects U-Boot proper as the next-stage
-        entry point.
-
-        Sources:
-        https://xfel.xboot.org/en/command/exec
-        https://github.com/riscv-software-src/opensbi/blob/c0f87f10d1bfb9e72a84ddfafb5604ee1bfe9d04/docs/firmware/fw_jump.md
+        The package installs `fw_jump.bin`.
       */
       mkOpenSBIMangoPiFel =
         { name, uboot }:

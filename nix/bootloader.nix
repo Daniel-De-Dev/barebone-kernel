@@ -1,13 +1,11 @@
 /*
   Build the RISC-V bootloader as a UEFI application.
 
-  Rust can produce a bare-metal RISC-V ELF executable, but LLVM cannot
-  currently produce the RISC-V PE/COFF objects needed by a native UEFI target.
-  The build hence currently has this pipeline:
+  Rust cannot currently produce the RISC-V PE/COFF objects needed by a native
+  UEFI target. The build hence has this pipeline:
 
-      Rust source
-          -> position-independent RISC-V ELF
-          -> RISC-V PE32+ UEFI application
+  Rust source is compiled to a position-independent RISC-V ELF then `elf2efi.py`
+  convert the ELF to a PE32+ UEFI application
 
   The `uefi` crate provides the UEFI ABI and entry point, while
   `elf2efi.py` does the ELF-to-PE/COFF conversion.
@@ -70,15 +68,10 @@ naersk'.buildPackage {
     python
   ];
 
-  /*
-    naersk installs the linked ELF as $out/bin/bootloader. Convert it into a
-    PE32+ image that UEFI firmware can load.
-  */
+  # Perform the conversion from ELF to EFI
   postInstall = ''
     elf="$out/bin/${bootloaderCrate}"
     efi="$out/bin/${efiFileName}"
-
-    echo "Converting RISC-V ELF to UEFI PE32+: $efi"
 
     "${python}/bin/python" \
       "${elf2efi}" \

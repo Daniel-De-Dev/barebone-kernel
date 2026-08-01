@@ -7,20 +7,20 @@ _: {
       ...
     }:
     let
-      # TODO: Document boot process for qemu in more detail
-      # https://github.com/riscv-software-src/opensbi/blob/master/docs/platform/qemu_virt.md
-      # https://docs.u-boot.org/en/stable/board/emulation/qemu-riscv.html
-      # https://www.qemu.org/docs/master/system/riscv/virt.html#running-u-boot
-
-      boards = import ./boards.nix { inherit lib; };
-
       /*
-        Start QEMU with U-Boot and OpenSBI.
+        QEMU loads U-Boot SPL as the `virt` machine firmware and places the FIT
+        image at the address expected by the SPL. The FIT contains OpenSBI and
+        U-Boot proper. U-Boot then discovers the attached ESP as a VirtIO block
+        device and launches its default RISC-V EFI application.
 
         Sources:
+        https://www.qemu.org/docs/master/system/riscv/virt.html#running-u-boot
         https://docs.u-boot.org/en/stable/board/emulation/qemu-riscv.html
         https://github.com/riscv-software-src/opensbi/blob/master/docs/platform/qemu_virt.md
       */
+
+      boards = import ./boards.nix { inherit lib; };
+
       mkRunQemu =
         { programName, espImage }:
         pkgs.writeShellApplication {

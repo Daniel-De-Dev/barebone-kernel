@@ -7,6 +7,28 @@ _: {
       ...
     }:
     let
+      /*
+        The MangoPi MQ Pro FEL path starts after the D1 BootROM enters FEL mode.
+        xfel initializes DRAM, uploads U-Boot proper, an ESP disk image, and
+        OpenSBI FW_JUMP, then starts OpenSBI directly. No U-Boot SPL runs.
+
+        `xfel exec` does not provide an FDT address in a1. The firmware build
+        therefore embeds U-Boot's DTB in OpenSBI, which relocates it to the
+        configured staging address and passes it to U-Boot proper. Because no
+        SPL prepares the DTB, the U-Boot build adds the DRAM description. It
+        also reserves the uploaded ESP range so U-Boot does not overwrite that
+        memory.
+
+        U-Boot exposes the ESP through blkmap, loads `BOOTRISCV64.EFI` from its
+        FAT partition, and launches it with `bootefi`.
+
+        Sources:
+        https://xfel.xboot.org/en/command/ddr
+        https://xfel.xboot.org/en/command/exec
+        https://docs.u-boot.org/en/stable/usage/blkmap.html
+        https://github.com/riscv-software-src/opensbi/blob/c0f87f10d1bfb9e72a84ddfafb5604ee1bfe9d04/docs/firmware/fw_jump.md
+      */
+
       boards = import ./boards.nix { inherit lib; };
 
       mkRunMangoPi =
