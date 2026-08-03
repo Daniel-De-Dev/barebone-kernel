@@ -65,6 +65,7 @@ _: {
     {
       packages = {
         # TODO: Define SD flashing (Should be the same process as for vf2?)
+        # TODO: Look into speeding up upload speeds
         run-mangopi-debug = mkRunMangoPi {
           programName = "run-mangopi-debug";
           espImage = config.packages.esp-image-debug;

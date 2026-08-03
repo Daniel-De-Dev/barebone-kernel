@@ -42,8 +42,8 @@ _: {
     in
     {
       # TODO: Implement a way between which boot option is intended
-      # formatting an SD card
-      # Maybe also flash the QSPI NOR Flash memory? (WARN: Will be overwriting factory firmware)
+      # TODO: formatting an SD card
+      # TODO: Maybe also flash the QSPI NOR Flash memory? (WARN: Will be overwriting factory firmware)
       # TODO: Look into emulating an ESP filesystem trough uart boot (update doc at top of file)
       # TODO: Look into increasing baudrate to increase upload speeds
       packages = {
