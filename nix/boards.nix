@@ -8,6 +8,9 @@ in
 {
   inherit toHex;
 
+  # Amount if memory allocated for ram disk in memory for UART/FEL booting
+  ramDiskSize = 2 * MiB;
+
   qemu =
     let
       dramBase = 2 * GiB;

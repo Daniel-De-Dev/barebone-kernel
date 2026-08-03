@@ -1,11 +1,6 @@
 { inputs, ... }: {
   perSystem =
-    {
-      lib,
-      pkgs,
-      config,
-      ...
-    }:
+    { lib, pkgs, ... }:
     let
       riscvPkgs = pkgs.pkgsCross.riscv64;
       crossCompile = riscvPkgs.stdenv.cc.targetPrefix;
@@ -158,14 +153,11 @@
 
         `name` identifies the build variant and forms part of the package name.
 
-        `espImage` provides the exact disk size used to generate a DT include
-        that describes DRAM and reserves the in-memory ESP range.
-
         The build enables CONFIG_BLKMAP and installs `u-boot.bin` and
         `u-boot.dtb`.
       */
       mkUBootMangoPi =
-        { name, espImage }:
+        { name }:
         riscvPkgs.stdenv.mkDerivation {
           pname = "u-boot-mangopi-fel-${name}";
           version = inputs.src-uboot-d1.shortRev or "dirty";
@@ -181,23 +173,13 @@
                 $'#include "sun20i-common-regulators.dtsi"\n#include "barebone-fel-memory.dtsi"'
 
 
-            # TODO: See if ramDiskSize can statically defined in nix and it's
-            # checked by the esp generator instead that asserts its size within
-            # the statically allocated size (since FEL upload != allocated size)
-            # resulting in allocated size can be larger without increasing upload time
-            espSizeBytes=$(<"${espImage}/disk-size-bytes")
             ramDiskEnd=$((
-              ${toString boards.mangopi.ramDiskAddress} + espSizeBytes
+              ${toString boards.mangopi.ramDiskAddress} + ${toString boards.ramDiskSize}
             ))
             dramEnd=$((
               ${toString boards.mangopi.dramStart}
               + ${toString boards.mangopi.dramSize}
             ))
-
-            if ((espSizeBytes <= 0)); then
-              echo "error: ESP disk image size must be greater than zero" >&2
-              exit 1
-            fi
 
             # TODO: Add extra checks and revisit to simplify scripts in project
             # ramDiskAddress >= dramStart
@@ -209,7 +191,7 @@
               exit 1
             fi
 
-            printf -v ramDiskSize '0x%08x' "$espSizeBytes"
+            printf -v ramDiskSize '0x%08x' "${toString boards.ramDiskSize}"
 
             install -Dm0644 \
               ${./dts/mangopi-fel-memory.dtsi.in} \
@@ -326,15 +308,9 @@
           '';
         };
 
-      ubootMangoPiDebug = mkUBootMangoPi {
-        name = "debug";
-        espImage = config.packages.esp-image-debug;
-      };
+      ubootMangoPiDebug = mkUBootMangoPi { name = "debug"; };
 
-      ubootMangoPi = mkUBootMangoPi {
-        name = "release";
-        espImage = config.packages.esp-image;
-      };
+      ubootMangoPi = mkUBootMangoPi { name = "release"; };
 
       opensbiMangoPiFelDebug = mkOpenSBIMangoPiFel {
         name = "debug";

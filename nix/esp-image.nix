@@ -1,19 +1,23 @@
 _: {
   perSystem =
-    { config, pkgs, ... }:
+    {
+      config,
+      pkgs,
+      lib,
+      ...
+    }:
     let
       sectorSizeBytes = 512;
       partitionStartMiB = 1;
+
+      boards = import ./boards.nix { inherit lib; };
 
       /*
         Create a raw disk containing one FAT32 EFI System Partition.
 
         The first MiB is reserved for the MBR and partition alignment. The
-        partition occupies the remainder of the image. Its size is increased
-        in one-MiB steps until every installed payload fits.
-
-        `disk-size-bytes` records the final raw image size for consumers which
-        must reserve an equally sized memory region.
+        partition occupies the remainder of the image. Its tries to fit in the
+        specified size, otherwise it fails.
 
         UEFI defines \EFI\BOOT\BOOTRISCV64.EFI as the default removable-media
         boot path for 64-bit RISC-V systems.
@@ -32,12 +36,14 @@ _: {
               pkgs.util-linux
             ];
           }
+          # TODO: Switch to using env vars as there is no reason for it to take arguments
           ''
             bash ${./scripts/build-esp-image.sh} \
               --bootloader "${bootloader}/bin/BOOTRISCV64.EFI" \
               --output "$out" \
               --partition-start-mib ${toString partitionStartMiB} \
-              --sector-size ${toString sectorSizeBytes}
+              --sector-size ${toString sectorSizeBytes} \
+              --disk-size ${toString boards.ramDiskSize}
           '';
     in
     {

@@ -11,7 +11,8 @@ Usage: build-esp-image \
   --bootloader FILE \
   --output DIRECTORY \
   --partition-start-mib NUMBER \
-  --sector-size NUMBER
+  --sector-size NUMBER \
+  --disk-size NUMBER
 EOF
 }
 
@@ -26,6 +27,7 @@ bootloader_image=
 output_directory=
 partition_start_mib=
 sector_size_bytes=
+disk_size_bytes=
 
 while (($# > 0)); do
   case "$1" in
@@ -47,6 +49,11 @@ while (($# > 0)); do
   --sector-size)
     (($# >= 2)) || usage_error "--sector-size requires a number"
     sector_size_bytes=$2
+    shift 2
+    ;;
+  --disk-size)
+    (($# >= 2)) || usage_error "--disk-size requires a number"
+    disk_size_bytes=$2
     shift 2
     ;;
   -h | --help)
@@ -71,6 +78,9 @@ done
 [[ -n ${sector_size_bytes} ]] ||
   usage_error "--sector-size is required"
 
+[[ -n ${disk_size_bytes} ]] ||
+  usage_error "--disk-size is required"
+
 [[ -f ${bootloader_image} ]] ||
   usage_error "bootloader does not exist: ${bootloader_image}"
 
@@ -80,16 +90,26 @@ done
 [[ ${sector_size_bytes} =~ ^[1-9][0-9]*$ ]] ||
   usage_error "--sector-size must be a positive integer"
 
+[[ ${disk_size_bytes} =~ ^[1-9][0-9]*$ ]] ||
+  usage_error "--disk-size must be a positive integer"
+
 # The disk is exposed by QEMU and U-Boot using 512-byte logical blocks.
 if ((sector_size_bytes != 512)); then
   usage_error "only a 512-byte sector size is currently supported"
 fi
 
 readonly mib_bytes=$((1024 * 1024))
-readonly sectors_per_mib=$((mib_bytes / sector_size_bytes))
 readonly partition_start_sector=$(((\
   partition_start_mib * mib_bytes) / sector_size_bytes))
-readonly max_partition_size_mib=1024
+
+# Calculate fixed partition size based on the provided disk size
+readonly partition_size_bytes=$((disk_size_bytes - (partition_start_mib * mib_bytes)))
+readonly partition_size_sectors=$((partition_size_bytes / sector_size_bytes))
+
+if ((partition_size_bytes <= 0)); then
+  echo "error: disk-size is too small to contain the partition offset" >&2
+  exit 1
+fi
 
 work_directory=$(mktemp -d "${TMPDIR:-/tmp}/esp-image.XXXXXX")
 
@@ -110,61 +130,33 @@ install -Dm0644 \
   "${bootloader_image}" \
   "${esp_root}/EFI/BOOT/BOOTRISCV64.EFI"
 
-payload_size_bytes=$(
-  du --summarize --bytes "${esp_root}" |
-    cut --fields=1
-)
+# Create a fixed-size partition image
+truncate \
+  --size="${partition_size_bytes}" \
+  "${partition_image}"
 
-partition_size_mib=$(((\
-  payload_size_bytes + mib_bytes - 1) / mib_bytes))
+mkfs.vfat \
+  --invariant \
+  -n ESP \
+  -h "${partition_start_sector}" \
+  "${partition_image}" \
+  >/dev/null
 
-if ((partition_size_mib < 1)); then
-  partition_size_mib=1
+# Populate the partition image
+if ! mcopy \
+  -i "${partition_image}" \
+  -s "${esp_root}/EFI" \
+  ::/ \
+  >/dev/null 2>"${mcopy_error}"; then
+
+  echo "error: ESP payloads did not fit in the allocated ${partition_size_bytes} bytes partition" >&2
+  cat "${mcopy_error}" >&2
+  exit 1
 fi
 
-while true; do
-  rm -f "${partition_image}"
-
-  truncate \
-    --size="${partition_size_mib}M" \
-    "${partition_image}"
-
-  mkfs.vfat \
-    --invariant \
-    -n ESP \
-    -h "${partition_start_sector}" \
-    "${partition_image}" \
-    >/dev/null
-
-  # WARN: mcopy does not differ between failures which can result uncessary iteration
-  if mcopy \
-    -i "${partition_image}" \
-    -s "${esp_root}/EFI" \
-    ::/ \
-    >/dev/null 2>"${mcopy_error}"; then
-    break
-  fi
-
-  if ((partition_size_mib >= max_partition_size_mib)); then
-    echo \
-      "error: ESP payloads did not fit in a ${max_partition_size_mib} MiB partition" \
-      >&2
-
-    cat "${mcopy_error}" >&2
-    exit 1
-  fi
-
-  partition_size_mib=$((partition_size_mib + 1))
-done
-
-disk_size_mib=$((\
-  partition_start_mib + partition_size_mib))
-
-partition_size_sectors=$((\
-  partition_size_mib * sectors_per_mib))
-
+# Create the final disk image to exact requested size
 truncate \
-  --size="${disk_size_mib}M" \
+  --size="${disk_size_bytes}" \
   "${disk_image}"
 
 sfdisk "${disk_image}" <<EOF
