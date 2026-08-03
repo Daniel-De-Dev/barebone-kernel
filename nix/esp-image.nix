@@ -19,6 +19,9 @@ _: {
         partition occupies the remainder of the image. Its tries to fit in the
         specified size, otherwise it fails.
 
+        `disk-size-bytes` records the final raw image size for consumers which
+        must reserve an equally sized memory region.
+
         UEFI defines \EFI\BOOT\BOOTRISCV64.EFI as the default removable-media
         boot path for 64-bit RISC-V systems.
 
@@ -43,7 +46,8 @@ _: {
 
           }
           ''
-            bash ${./scripts/build-esp-image.sh}
+            source ${./scripts/common.sh}
+            ${builtins.readFile ./scripts/build-esp-image.sh}
           '';
     in
     {

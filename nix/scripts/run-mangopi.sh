@@ -7,14 +7,14 @@ disk_size_file="${MANGOPI_DISK_SIZE_FILE:?MANGOPI_DISK_SIZE_FILE must be set by 
 ram_disk_address="${MANGOPI_RAM_DISK_ADDRESS:?MANGOPI_RAM_DISK_ADDRESS must be set by Nix}"
 tio_script="${MANGOPI_TIO_SCRIPT:?MANGOPI_TIO_SCRIPT must be set by Nix}"
 
+program_name="$(basename "$0")"
+
 usage() {
-  cat <<'USAGE'
-Usage: run-mangopi [SERIAL_DEVICE]
+  cat <<USAGE
+Usage: ${program_name} [SERIAL_DEVICE]
 
 Boot the MangoPi MQ Pro through FEL
-
 U-Boot maps the in-memory disk through blkmap.
-
 SERIAL_DEVICE defaults to /dev/ttyUSB0.
 
 Options:
@@ -22,20 +22,10 @@ Options:
 USAGE
 }
 
-usage_error() {
-  echo "error: $1" >&2
-  echo >&2
-  usage >&2
-  exit 2
-}
-
 serial_device="${MANGOPI_SERIAL_PORT:-/dev/ttyUSB0}"
+positional_args=()
 
-if (($# > 1)); then
-  usage_error "expected at most one serial device"
-fi
-
-if (($# == 1)); then
+while (($# > 0)); do
   case "$1" in
   -h | --help)
     usage
@@ -45,22 +35,24 @@ if (($# == 1)); then
     usage_error "unknown option: $1"
     ;;
   *)
-    serial_device="$1"
+    positional_args+=("$1")
+    shift
     ;;
   esac
+done
+
+if ((${#positional_args[@]} > 1)); then
+  usage_error "expected at most one serial device"
+elif ((${#positional_args[@]} == 1)); then
+  serial_device="${positional_args[0]}"
 fi
 
 if [[ ! -e ${serial_device} ]]; then
   usage_error "serial device does not exist: ${serial_device}"
 fi
 
-if [[ ! -f ${disk_image} ]]; then
-  usage_error "ESP disk image does not exist: ${disk_image}"
-fi
-
-if [[ ! -f ${disk_size_file} ]]; then
-  usage_error "ESP disk size metadata does not exist: ${disk_size_file}"
-fi
+require_file "${disk_image}"
+require_file "${disk_size_file}"
 
 disk_size_bytes=$(stat -c '%s' "${disk_image}")
 reserved_size_bytes=$(<"${disk_size_file}")
@@ -74,14 +66,11 @@ if ((disk_size_bytes % 512 != 0)); then
 fi
 
 if ((disk_size_bytes != reserved_size_bytes)); then
-  usage_error \
-    "ESP disk image (${disk_size_bytes} bytes) does not match the DTB reservation (${reserved_size_bytes} bytes)"
+  usage_error "ESP disk image (${disk_size_bytes} bytes) does not match the DTB reservation (${reserved_size_bytes} bytes)"
 fi
 
 disk_blocks=$((disk_size_bytes / 512))
 printf -v disk_blocks_hex '0x%x' "${disk_blocks}"
-
-# The Lua script uses these values when it creates the U-Boot blkmap device.
 export MANGOPI_RAM_DISK_BLOCKS="${disk_blocks_hex}"
 
 if ! xfel version >/dev/null 2>&1; then
@@ -90,22 +79,21 @@ if ! xfel version >/dev/null 2>&1; then
   exit 1
 fi
 
+disk_size_mib=$((disk_size_bytes / 1024 / 1024))
+
 echo "Initializing D1 DDR..."
 xfel ddr d1
-
 echo "Uploading U-Boot proper to ${uboot_address}..."
 xfel write "${uboot_address}" "${uboot_image}"
-
-echo "Uploading the ${disk_size_bytes}-byte ESP disk to ${ram_disk_address}..."
+echo "Uploading the ${disk_size_bytes}-byte (${disk_size_mib} MiB) ESP disk to ${ram_disk_address}..."
 xfel write "${ram_disk_address}" "${disk_image}"
-
-echo "Uploading OpenSBI FW_JUMP to ${opensbi_address}..."
+echo "Uploading OpenSBI to ${opensbi_address}..."
 xfel write "${opensbi_address}" "${opensbi_image}"
-
 echo "Starting OpenSBI..."
 xfel exec "${opensbi_address}"
 
 echo "Attaching to U-Boot on ${serial_device}..."
+# TODO: Look into parametarizing these values (maybe define in boards.nix)
 exec tio \
   --baudrate 115200 \
   --databits 8 \

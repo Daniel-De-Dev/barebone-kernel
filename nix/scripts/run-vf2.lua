@@ -33,6 +33,7 @@ local modem_send = tio_function('send')
 local serial_expect = tio_function('expect')
 local serial_write = tio_function('write')
 
+-- TODO: Add new lines to all prints
 print('Sending SPL image with XMODEM-1K...')
 print('Ensure VF2 is powered on, bootmode set to UART and waiting for data')
 modem_send(spl_image, XMODEM_1K)

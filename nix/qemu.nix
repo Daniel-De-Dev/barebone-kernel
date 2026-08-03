@@ -37,9 +37,13 @@ _: {
             FIT_LOAD_ADDRESS = boards.toHex boards.qemu.fitLoadAddress;
           };
 
-          text = lib.removePrefix "set -euo pipefail\n" (
-            builtins.readFile ./scripts/run-qemu.sh
-          );
+          text = ''
+            # shellcheck source=/dev/null
+            source ${./scripts/common.sh}
+            ${lib.removePrefix "set -euo pipefail\n" (
+              builtins.readFile ./scripts/run-qemu.sh
+            )}
+          '';
         };
     in
     {

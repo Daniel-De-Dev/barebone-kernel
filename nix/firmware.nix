@@ -158,6 +158,50 @@
       */
       mkUBootMangoPi =
         { name }:
+        let
+          inherit (boards) ramDiskSize;
+          inherit (boards.mangopi)
+            dramStart
+            dramSize
+            ramDiskAddress
+            fdtAddress
+            efiLoadAddress
+            ubootAddress
+            ;
+
+          dramEnd = dramStart + dramSize;
+          ramDiskEnd = ramDiskAddress + ramDiskSize;
+
+          mib = 1024 * 1024;
+        in
+        # TODO: Consider more exstensive asserts and reconsider asserts
+        # across nix files and scripts when it comes being confident in
+        # getting good feedback and being sure assumptions are meet.
+        # Maybe not to gurantee absolute correct state, but just have
+        # general bound checks and other important sanity chekcs to avoid
+        # headaches when accidentally breaking assumptiosn when refactoring
+        assert lib.assertMsg (
+          ramDiskAddress >= dramStart
+        ) "RAM disk address falls before DRAM start";
+        assert lib.assertMsg (
+          ramDiskEnd <= dramEnd
+        ) "ESP reservation extends beyond MangoPi DRAM";
+        assert lib.assertMsg
+          # WARN: size isint taken into account
+          (fdtAddress >= dramStart && fdtAddress < dramEnd)
+          "FDT staging address is outside DRAM";
+        assert lib.assertMsg
+          # WARN: size isint taken into account
+          (efiLoadAddress >= dramStart && efiLoadAddress < dramEnd)
+          "EFI load address is outside DRAM";
+        assert lib.assertMsg
+          # WARN: size isint taken into account
+          (ubootAddress >= dramStart && ubootAddress < dramEnd)
+          "U-Boot staging address is outside DRAM";
+        assert lib.assertMsg (
+          lib.mod ramDiskSize mib == 0
+        ) "RAM disk size must be a multiple of 1 MiB";
+
         riscvPkgs.stdenv.mkDerivation {
           pname = "u-boot-mangopi-fel-${name}";
           version = inputs.src-uboot-d1.shortRev or "dirty";
@@ -172,38 +216,17 @@
                 '#include "sun20i-common-regulators.dtsi"' \
                 $'#include "sun20i-common-regulators.dtsi"\n#include "barebone-fel-memory.dtsi"'
 
-
-            ramDiskEnd=$((
-              ${toString boards.mangopi.ramDiskAddress} + ${toString boards.ramDiskSize}
-            ))
-            dramEnd=$((
-              ${toString boards.mangopi.dramStart}
-              + ${toString boards.mangopi.dramSize}
-            ))
-
-            # TODO: Add extra checks and revisit to simplify scripts in project
-            # ramDiskAddress >= dramStart
-            # staging addresses are ordered and inside DRAM
-            # the disk size is a multiple of 1 MiB
-            # documented occupied ranges do not overlap
-            if ((ramDiskEnd > dramEnd)); then
-              echo "error: ESP reservation extends beyond MangoPi DRAM" >&2
-              exit 1
-            fi
-
-            printf -v ramDiskSize '0x%08x' "${toString boards.ramDiskSize}"
-
             install -Dm0644 \
               ${./dts/mangopi-fel-memory.dtsi.in} \
               arch/riscv/dts/barebone-fel-memory.dtsi
 
             substituteInPlace arch/riscv/dts/barebone-fel-memory.dtsi \
-              --replace-fail '@dramUnitAddress@' '${lib.toHexString boards.mangopi.dramStart}' \
-              --replace-fail '@dramStart@' '${boards.toHex boards.mangopi.dramStart}' \
-              --replace-fail '@dramSize@' '${boards.toHex boards.mangopi.dramSize}' \
-              --replace-fail '@ramDiskUnitAddress@' '${lib.toHexString boards.mangopi.ramDiskAddress}' \
-              --replace-fail '@ramDiskAddress@' '${boards.toHex boards.mangopi.ramDiskAddress}' \
-              --replace-fail '@ramDiskSize@' "$ramDiskSize"
+              --replace-fail '@dramUnitAddress@' '${lib.toHexString dramStart}' \
+              --replace-fail '@dramStart@' '${boards.toHex dramStart}' \
+              --replace-fail '@dramSize@' '${boards.toHex dramSize}' \
+              --replace-fail '@ramDiskUnitAddress@' '${lib.toHexString ramDiskAddress}' \
+              --replace-fail '@ramDiskAddress@' '${boards.toHex ramDiskAddress}' \
+              --replace-fail '@ramDiskSize@' '${boards.toHex ramDiskSize}'
           '';
 
           nativeBuildInputs = with pkgs; [

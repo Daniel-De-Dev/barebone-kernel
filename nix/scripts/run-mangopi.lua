@@ -1,4 +1,5 @@
 -- TODO: Merge shared function across .lua files to reduse duplication
+-- TODO: Clean up lua scripts in project
 local function required_environment_variable(name)
   local value = os.getenv(name)
 

@@ -59,13 +59,17 @@ _: {
             MANGOPI_TIO_SCRIPT = ./scripts/run-mangopi.lua;
           };
 
-          text = builtins.readFile ./scripts/run-mangopi.sh;
+          text = ''
+            # shellcheck source=/dev/null
+            source ${./scripts/common.sh}
+            ${builtins.readFile ./scripts/run-mangopi.sh}
+          '';
         };
     in
     {
       packages = {
         # TODO: Define SD flashing (Should be the same process as for vf2?)
-        # TODO: Look into speeding up upload speeds
+        # TODO: Look into speeding up upload speeds by increasing UART BAUD
         run-mangopi-debug = mkRunMangoPi {
           programName = "run-mangopi-debug";
           espImage = config.packages.esp-image-debug;

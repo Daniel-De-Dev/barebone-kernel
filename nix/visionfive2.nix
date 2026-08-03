@@ -27,7 +27,11 @@ _: {
             VF2_TIO_SCRIPT = ./scripts/run-vf2.lua;
           };
 
-          text = builtins.readFile ./scripts/run-vf2.sh;
+          text = ''
+            # shellcheck source=/dev/null
+            source ${./scripts/common.sh}
+            ${builtins.readFile ./scripts/run-vf2.sh}
+          '';
         };
 
       runVisionFive2Debug = mkRunVisionFive2 {
