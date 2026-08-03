@@ -5,97 +5,37 @@ set -euo pipefail
 # arguments across sh files (decent amount of duplciated boilerplate)
 # TODO: standardize also error handling across scripts
 # TODO: review and cleanup the scripts in the project
-usage() {
-  cat <<'EOF'
-Usage: build-esp-image \
-  --bootloader FILE \
-  --output DIRECTORY \
-  --partition-start-mib NUMBER \
-  --sector-size NUMBER \
-  --disk-size NUMBER
-EOF
-}
 
-usage_error() {
-  echo "error: $1" >&2
-  echo >&2
-  usage >&2
+bootloader_image="${BOOTLOADER_IMAGE:?BOOTLOADER_IMAGE must be set by Nix}"
+output_directory="${out:?out must be set by Nix}"
+partition_start_mib="${PARTITION_START_MIB:?PARTITION_START_MIB must be set by Nix}"
+sector_size_bytes="${SECTOR_SIZE_BYTES:?SECTOR_SIZE_BYTES must be set by Nix}"
+disk_size_bytes="${DISK_SIZE_BYTES:?DISK_SIZE_BYTES must be set by Nix}"
+
+[[ -f ${bootloader_image} ]] || {
+  echo "error: bootloader does not exist: ${bootloader_image}" >&2
   exit 2
 }
 
-bootloader_image=
-output_directory=
-partition_start_mib=
-sector_size_bytes=
-disk_size_bytes=
+[[ ${partition_start_mib} =~ ^[1-9][0-9]*$ ]] || {
+  echo "error: PARTITION_START_MIB must be a positive integer" >&2
+  exit 2
+}
 
-while (($# > 0)); do
-  case "$1" in
-  --bootloader)
-    (($# >= 2)) || usage_error "--bootloader requires a file"
-    bootloader_image=$2
-    shift 2
-    ;;
-  --output)
-    (($# >= 2)) || usage_error "--output requires a directory"
-    output_directory=$2
-    shift 2
-    ;;
-  --partition-start-mib)
-    (($# >= 2)) || usage_error "--partition-start-mib requires a number"
-    partition_start_mib=$2
-    shift 2
-    ;;
-  --sector-size)
-    (($# >= 2)) || usage_error "--sector-size requires a number"
-    sector_size_bytes=$2
-    shift 2
-    ;;
-  --disk-size)
-    (($# >= 2)) || usage_error "--disk-size requires a number"
-    disk_size_bytes=$2
-    shift 2
-    ;;
-  -h | --help)
-    usage
-    exit 0
-    ;;
-  *)
-    usage_error "unknown option: $1"
-    ;;
-  esac
-done
+[[ ${sector_size_bytes} =~ ^[1-9][0-9]*$ ]] || {
+  echo "error: SECTOR_SIZE_BYTES must be a positive integer" >&2
+  exit 2
+}
 
-[[ -n ${bootloader_image} ]] ||
-  usage_error "--bootloader is required"
-
-[[ -n ${output_directory} ]] ||
-  usage_error "--output is required"
-
-[[ -n ${partition_start_mib} ]] ||
-  usage_error "--partition-start-mib is required"
-
-[[ -n ${sector_size_bytes} ]] ||
-  usage_error "--sector-size is required"
-
-[[ -n ${disk_size_bytes} ]] ||
-  usage_error "--disk-size is required"
-
-[[ -f ${bootloader_image} ]] ||
-  usage_error "bootloader does not exist: ${bootloader_image}"
-
-[[ ${partition_start_mib} =~ ^[1-9][0-9]*$ ]] ||
-  usage_error "--partition-start-mib must be a positive integer"
-
-[[ ${sector_size_bytes} =~ ^[1-9][0-9]*$ ]] ||
-  usage_error "--sector-size must be a positive integer"
-
-[[ ${disk_size_bytes} =~ ^[1-9][0-9]*$ ]] ||
-  usage_error "--disk-size must be a positive integer"
+[[ ${disk_size_bytes} =~ ^[1-9][0-9]*$ ]] || {
+  echo "error: DISK_SIZE_BYTES must be a positive integer" >&2
+  exit 2
+}
 
 # The disk is exposed by QEMU and U-Boot using 512-byte logical blocks.
 if ((sector_size_bytes != 512)); then
-  usage_error "only a 512-byte sector size is currently supported"
+  echo "error: only a 512-byte sector size is currently supported" >&2
+  exit 2
 fi
 
 readonly mib_bytes=$((1024 * 1024))

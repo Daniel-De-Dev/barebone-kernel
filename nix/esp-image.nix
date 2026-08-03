@@ -35,15 +35,15 @@ _: {
               pkgs.mtools
               pkgs.util-linux
             ];
+
+            BOOTLOADER_IMAGE = "${bootloader}/bin/BOOTRISCV64.EFI";
+            PARTITION_START_MIB = toString partitionStartMiB;
+            SECTOR_SIZE_BYTES = toString sectorSizeBytes;
+            DISK_SIZE_BYTES = toString boards.ramDiskSize;
+
           }
-          # TODO: Switch to using env vars as there is no reason for it to take arguments
           ''
-            bash ${./scripts/build-esp-image.sh} \
-              --bootloader "${bootloader}/bin/BOOTRISCV64.EFI" \
-              --output "$out" \
-              --partition-start-mib ${toString partitionStartMiB} \
-              --sector-size ${toString sectorSizeBytes} \
-              --disk-size ${toString boards.ramDiskSize}
+            bash ${./scripts/build-esp-image.sh}
           '';
     in
     {
