@@ -67,7 +67,7 @@ qemu_arguments=(
   -nographic
   -bios "${uboot_image}/u-boot-spl"
   -device "loader,file=${uboot_image}/u-boot.itb,addr=${fit_load_address}"
-  # Remove "No RNG device" warning
+  # Removes "No RNG device" warning
   -object "rng-random,filename=/dev/urandom,id=rng0"
   -device "virtio-rng-device,rng=rng0"
   -drive "file=${disk_image},format=raw,if=virtio"

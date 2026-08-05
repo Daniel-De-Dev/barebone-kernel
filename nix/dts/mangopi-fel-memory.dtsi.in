@@ -9,7 +9,7 @@
 		#size-cells = <1>;
 		ranges;
 
-		fel-esp@@ramDiskUnitAddress@ {
+		ram-esp@@ramDiskUnitAddress@ {
 			reg = <@ramDiskAddress@ @ramDiskSize@>;
 			no-map;
 		};

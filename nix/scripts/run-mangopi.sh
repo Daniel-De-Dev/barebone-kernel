@@ -51,25 +51,8 @@ if [[ ! -e ${serial_device} ]]; then
   usage_error "serial device does not exist: ${serial_device}"
 fi
 
-require_file "${disk_image}"
-require_file "${disk_size_file}"
+disk_blocks=$(validate_esp_image "${disk_image}" "${disk_size_file}")
 
-disk_size_bytes=$(stat -c '%s' "${disk_image}")
-reserved_size_bytes=$(<"${disk_size_file}")
-
-if ((disk_size_bytes == 0)); then
-  usage_error "ESP disk image is empty"
-fi
-
-if ((disk_size_bytes % 512 != 0)); then
-  usage_error "ESP disk image size must be a multiple of 512 bytes"
-fi
-
-if ((disk_size_bytes != reserved_size_bytes)); then
-  usage_error "ESP disk image (${disk_size_bytes} bytes) does not match the DTB reservation (${reserved_size_bytes} bytes)"
-fi
-
-disk_blocks=$((disk_size_bytes / 512))
 printf -v disk_blocks_hex '0x%x' "${disk_blocks}"
 export MANGOPI_RAM_DISK_BLOCKS="${disk_blocks_hex}"
 
@@ -79,6 +62,7 @@ if ! xfel version >/dev/null 2>&1; then
   exit 1
 fi
 
+disk_size_bytes=$(stat -c '%s' "${disk_image}")
 disk_size_mib=$((disk_size_bytes / 1024 / 1024))
 
 echo "Initializing D1 DDR..."

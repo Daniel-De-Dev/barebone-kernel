@@ -180,6 +180,8 @@
         # Maybe not to gurantee absolute correct state, but just have
         # general bound checks and other important sanity chekcs to avoid
         # headaches when accidentally breaking assumptiosn when refactoring
+        # Idea: define simialrly to ram disk hardocded space allocated and
+        # and assert sizes to fit within the allocated size...
         assert lib.assertMsg (
           ramDiskAddress >= dramStart
         ) "RAM disk address falls before DRAM start";
@@ -358,11 +360,38 @@
           opensbi = opensbiQemu;
         };
 
-        uboot-vf2 = mkUBoot {
-          name = "visionfive2";
-          defconfig = "starfive_visionfive2_defconfig";
-          opensbi = opensbiVisionFive2;
-        };
+        # Due to uploading the disk image to ram; Override to compile memory
+        # reservation and enable blkmap feature.
+        uboot-vf2 =
+          (mkUBoot {
+            name = "visionfive2";
+            defconfig = "starfive_visionfive2_defconfig";
+            opensbi = opensbiVisionFive2;
+          }).overrideAttrs
+            (
+              _finalAttrs: previousAttrs: {
+                postPatch = (previousAttrs.postPatch or "") + ''
+                  substituteInPlace \
+                    arch/riscv/dts/starfive-visionfive2-u-boot.dtsi \
+                    --replace-fail \
+                      '#include "starfive-visionfive2-binman.dtsi"' \
+                      $'#include "starfive-visionfive2-binman.dtsi"\n#include "barebone-vf2-memory.dtsi"'
+
+                  install -Dm0644 \
+                    ${./dts/vf2-ramdisk-memory.dtsi.in} \
+                    arch/riscv/dts/barebone-vf2-memory.dtsi
+
+                  substituteInPlace arch/riscv/dts/barebone-vf2-memory.dtsi \
+                    --replace-fail '@ramDiskUnitAddress@' '${lib.toHexString boards.visionfive2.ramDiskAddress}' \
+                    --replace-fail '@ramDiskAddress@' '${boards.toHex boards.visionfive2.ramDiskAddress}' \
+                    --replace-fail '@ramDiskSize@' '${boards.toHex boards.ramDiskSize}'
+                '';
+
+                configurePhase = (previousAttrs.configurePhase or "") + ''
+                  ./scripts/config --enable CONFIG_BLKMAP
+                '';
+              }
+            );
 
         uboot-mangopi-debug = ubootMangoPiDebug;
         uboot-mangopi = ubootMangoPi;

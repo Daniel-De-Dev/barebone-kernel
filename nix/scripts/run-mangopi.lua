@@ -46,15 +46,15 @@ serial_write('\n')
 serial_expect('=> ')
 
 print('Creating a RAM-backed block device for the uploaded ESP image...')
-run_uboot_command('blkmap create fel-esp')
+run_uboot_command('blkmap create ram-esp')
 run_uboot_command(
-  'blkmap map fel-esp 0 ' .. ram_disk_blocks .. ' mem ' .. ram_disk_address
+  'blkmap map ram-esp 0 ' .. ram_disk_blocks .. ' mem ' .. ram_disk_address
 )
-run_uboot_command('blkmap get fel-esp dev feldev')
+run_uboot_command('blkmap get ram-esp dev espdev')
 
 print('Loading the RISC-V EFI bootloader from the RAM-backed FAT partition...')
 run_uboot_command(
-  'load blkmap ${feldev}:1 ' .. efi_load_address .. ' EFI/BOOT/BOOTRISCV64.EFI'
+  'load blkmap ${espdev}:1 ' .. efi_load_address .. ' EFI/BOOT/BOOTRISCV64.EFI'
 )
 
 print('Launching the EFI bootloader...')

@@ -4,17 +4,20 @@ let
   GiB = 1024 * MiB;
 
   toHex = value: "0x${lib.toHexString value}";
+
+  # Project standardized offsets
+  efiLoadOffset = 96 * MiB; # 0x06000000
+  ramDiskOffset = 128 * MiB; # 0x08000000
 in
 {
   inherit toHex;
 
-  # Amount if memory allocated for ram disk in memory for UART/FEL booting
+  # Memory allocated for the disk in memory when UART/FEL booting
   ramDiskSize = 2 * MiB;
 
   qemu =
     let
-      dramBase = 2 * GiB;
-      fitLoadOffset = 2 * MiB;
+      dramBase = 2 * GiB; # 0x80000000
     in
     {
       /*
@@ -23,7 +26,7 @@ in
         Sources:
         https://github.com/qemu/qemu/blob/e1705a25aff35635c360bbaba4c2731d019a422a/hw/riscv/virt.c#L106
       */
-      opensbiAddress = dramBase; # 0x80000000
+      opensbiAddress = dramBase;
 
       /*
         U-Boot's qemu-riscv64_spl_defconfig loads the FIT containing
@@ -32,12 +35,12 @@ in
         Sources:
         https://github.com/u-boot/u-boot/blob/100e12ea78c73071b9710f08b32fd4590019266f/configs/qemu-riscv64_spl_defconfig#L14
       */
-      fitLoadAddress = dramBase + fitLoadOffset; # 0x80200000
+      fitLoadAddress = dramBase + 2 * MiB; # 0x80200000
     };
 
   visionfive2 =
     let
-      base = 1 * GiB;
+      base = 1 * GiB; # 0x40000000
     in
     {
       /*
@@ -46,13 +49,15 @@ in
         Sources:
         https://doc-en.rvspace.org/JH7110/TRM/JH7110_TRM/system_memory_map.html
       */
-      opensbiAddress = base; # 0x40000000
+      opensbiAddress = base;
+      efiLoadAddress = base + efiLoadOffset;
+      ramDiskAddress = base + ramDiskOffset;
     };
 
   mangopi =
     let
-      base = 1 * GiB;
-      size = 512 * MiB;
+      base = 1 * GiB; # 0x40000000
+      size = 512 * MiB; # 0x20000000
     in
     {
       /*
@@ -61,9 +66,9 @@ in
         Source:
         d1-h user manual v1.0 - 3.1 Memory Mapping
       */
-      dramStart = base; # 0x40000000
-      dramSize = size; # 0x20000000
-      opensbiAddress = base; # 0x40000000
+      dramStart = base;
+      dramSize = size;
+      opensbiAddress = base;
 
       /*
         U-boot's loading address must match `CONFIG_TEXT_BASE` from its u-boot
@@ -75,10 +80,8 @@ in
       */
       ubootAddress = base + 46 * MiB; # 0x42e00000
 
-      # Project-selected staging addresses within DRAM. Their occupied ranges
-      # must not overlap one another or extend beyond the DRAM region.
       fdtAddress = base + 64 * MiB; # 0x44000000
-      efiLoadAddress = base + 96 * MiB; # 0x46000000
-      ramDiskAddress = base + 128 * MiB; # 0x48000000
+      efiLoadAddress = base + efiLoadOffset;
+      ramDiskAddress = base + ramDiskOffset;
     };
 }
