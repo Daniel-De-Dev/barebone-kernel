@@ -33,7 +33,10 @@ _: {
             VF2_DISK_SIZE_FILE = "${espImage}/disk-size-bytes";
             VF2_RAM_DISK_ADDRESS = boards.toHex boards.visionfive2.ramDiskAddress;
             VF2_EFI_LOAD_ADDRESS = boards.toHex boards.visionfive2.efiLoadAddress;
-            VF2_TIO_SCRIPT = ./scripts/run-vf2.lua;
+            VF2_BAUDRATE_BOOTROM = toString boards.visionfive2.baudrateBootROM;
+            VF2_BAUDRATE = toString boards.visionfive2.baudrate;
+            VF2_SPL_TIO_SCRIPT = ./scripts/run-vf2-spl.lua;
+            VF2_FIT_TIO_SCRIPT = ./scripts/run-vf2-fit.lua;
           };
 
           text = ''
@@ -57,7 +60,6 @@ _: {
       # TODO: Implement a way between which boot option is intended
       # TODO: formatting an SD card
       # TODO: Maybe also flash the QSPI NOR Flash memory? (WARN: Will be overwriting factory firmware)
-      # TODO: Look into increasing baudrate to increase upload speeds
       packages = {
         run-vf2 = runVisionFive2;
         run-vf2-debug = runVisionFive2Debug;

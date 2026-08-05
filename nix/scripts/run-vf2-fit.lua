@@ -22,7 +22,6 @@ local function tio_function(name)
   error('tio does not provide ' .. name .. '()')
 end
 
-local spl_image = required_environment_variable('VF2_SPL_IMAGE')
 local uboot_image = required_environment_variable('VF2_UBOOT_IMAGE')
 local disk_image = required_environment_variable('VF2_DISK_IMAGE')
 local ram_disk_address = required_environment_variable('VF2_RAM_DISK_ADDRESS')
@@ -39,10 +38,6 @@ local function run_uboot_command(command)
 end
 
 -- TODO: Add new lines to all prints for better terminal rendering
-print('Sending SPL image with XMODEM-1K...')
-print('Ensure VF2 is powered on, bootmode set to UART and waiting for data')
-modem_send(spl_image, XMODEM_1K)
-
 print('Sending OpenSBI and U-Boot with YMODEM...')
 modem_send(uboot_image, YMODEM)
 

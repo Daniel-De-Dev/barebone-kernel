@@ -52,6 +52,21 @@ in
       opensbiAddress = base;
       efiLoadAddress = base + efiLoadOffset;
       ramDiskAddress = base + ramDiskOffset;
+
+      # BootROM's baudrate is hardcoded
+      baudrateBootROM = 115200;
+
+      /*
+        Due to a combination of vf2's UART0 and my usb-to-uart limitations
+        this is the highest speed configurable. With a better usb-to-uart
+        module, i could theoretically reach a baudrate of 1500000 on UART0
+
+        TODO: Document the procedure to configure CP2102 to support 750000 baud
+
+        Read more:
+        https://forum.rvspace.org/t/increase-serial-port-baudrate/4557
+      */
+      baudrate = 750000;
     };
 
   mangopi =

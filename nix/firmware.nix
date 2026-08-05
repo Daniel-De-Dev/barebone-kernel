@@ -389,6 +389,9 @@
 
                 configurePhase = (previousAttrs.configurePhase or "") + ''
                   ./scripts/config --enable CONFIG_BLKMAP
+                  ./scripts/config \
+                    --set-val CONFIG_BAUDRATE \
+                    ${toString boards.visionfive2.baudrate}
                 '';
               }
             );

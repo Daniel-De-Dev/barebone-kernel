@@ -2,7 +2,10 @@ spl_image="${VF2_SPL_IMAGE:?VF2_SPL_IMAGE must be set by Nix}"
 uboot_image="${VF2_UBOOT_IMAGE:?VF2_UBOOT_IMAGE must be set by Nix}"
 disk_image="${VF2_DISK_IMAGE:?VF2_DISK_IMAGE must be set by Nix}"
 disk_size_file="${VF2_DISK_SIZE_FILE:?VF2_DISK_SIZE_FILE must be set by Nix}"
-tio_script="${VF2_TIO_SCRIPT:?VF2_TIO_SCRIPT must be set by Nix}"
+baudrate_bootrom="${VF2_BAUDRATE_BOOTROM:?VF2_BAUDRATE_BOOTROM must be set by Nix}"
+baudrate="${VF2_BAUDRATE:?VF2_BAUDRATE must be set by Nix}"
+spl_tio_script="${VF2_SPL_TIO_SCRIPT:?VF2_SPL_TIO_SCRIPT must be set by Nix}"
+fit_tio_script="${VF2_FIT_TIO_SCRIPT:?VF2_FIT_TIO_SCRIPT must be set by Nix}"
 
 program_name="$(basename "$0")"
 
@@ -60,14 +63,20 @@ export VF2_SPL_IMAGE="${spl_image}"
 export VF2_UBOOT_IMAGE="${uboot_image}"
 export VF2_DISK_IMAGE="${disk_image}"
 
-# TODO: Look into parametarizing these values (maybe define in boards.nix)
-exec tio \
-  --baudrate 115200 \
-  --databits 8 \
-  --flow none \
-  --stopbits 1 \
-  --parity none \
+# TODO: Look into adding user interrupts to completely cancel boot script rather
+# than just skip stages in uploads on ctrl+t
+tio \
+  --baudrate "${baudrate_bootrom}" \
+  --databits 8 --flow none --stopbits 1 --parity none \
   --no-reconnect \
-  --script-file "${tio_script}" \
+  --script-file "${spl_tio_script}" \
+  --script-run once \
+  "${serial_device}"
+
+tio \
+  --baudrate "${baudrate}" \
+  --databits 8 --flow none --stopbits 1 --parity none \
+  --no-reconnect \
+  --script-file "${fit_tio_script}" \
   --script-run once \
   "${serial_device}"
