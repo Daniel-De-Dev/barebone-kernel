@@ -56,6 +56,7 @@ _: {
             MANGOPI_DISK_SIZE_FILE = "${espImage}/disk-size-bytes";
             MANGOPI_RAM_DISK_ADDRESS = boards.toHex boards.mangopi.ramDiskAddress;
             MANGOPI_EFI_LOAD_ADDRESS = boards.toHex boards.mangopi.efiLoadAddress;
+            MANGOPI_BAUDRATE = boards.mangopi.baudrate;
             MANGOPI_TIO_SCRIPT = ./scripts/run-mangopi.lua;
           };
 

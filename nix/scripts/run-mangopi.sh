@@ -5,6 +5,7 @@ uboot_address="${MANGOPI_UBOOT_ADDRESS:?MANGOPI_UBOOT_ADDRESS must be set by Nix
 disk_image="${MANGOPI_DISK_IMAGE:?MANGOPI_DISK_IMAGE must be set by Nix}"
 disk_size_file="${MANGOPI_DISK_SIZE_FILE:?MANGOPI_DISK_SIZE_FILE must be set by Nix}"
 ram_disk_address="${MANGOPI_RAM_DISK_ADDRESS:?MANGOPI_RAM_DISK_ADDRESS must be set by Nix}"
+baudrate="${MANGOPI_BAUDRATE:?MANGOPI_BAUDRATE must be set by Nix}"
 tio_script="${MANGOPI_TIO_SCRIPT:?MANGOPI_TIO_SCRIPT must be set by Nix}"
 
 program_name="$(basename "$0")"
@@ -76,14 +77,9 @@ xfel write "${opensbi_address}" "${opensbi_image}"
 echo "Starting OpenSBI..."
 xfel exec "${opensbi_address}"
 
-echo "Attaching to U-Boot on ${serial_device}..."
-# TODO: Look into parametarizing these values (maybe define in boards.nix)
 exec tio \
-  --baudrate 115200 \
-  --databits 8 \
-  --flow none \
-  --stopbits 1 \
-  --parity none \
+  --baudrate "${baudrate}" \
+  --databits 8 --flow none --stopbits 1 --parity none \
   --no-reconnect \
   --script-file "${tio_script}" \
   --script-run once \

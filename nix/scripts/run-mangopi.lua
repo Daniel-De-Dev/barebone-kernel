@@ -40,22 +40,16 @@ local function run_uboot_command(command)
   serial_expect('=> ')
 end
 
-print('Waiting for U-Boot...')
 serial_expect('Hit any key to stop autoboot:')
 serial_write('\n')
 serial_expect('=> ')
 
-print('Creating a RAM-backed block device for the uploaded ESP image...')
 run_uboot_command('blkmap create ram-esp')
 run_uboot_command(
   'blkmap map ram-esp 0 ' .. ram_disk_blocks .. ' mem ' .. ram_disk_address
 )
 run_uboot_command('blkmap get ram-esp dev espdev')
-
-print('Loading the RISC-V EFI bootloader from the RAM-backed FAT partition...')
 run_uboot_command(
   'load blkmap ${espdev}:1 ' .. efi_load_address .. ' EFI/BOOT/BOOTRISCV64.EFI'
 )
-
-print('Launching the EFI bootloader...')
 serial_write('bootefi ' .. efi_load_address .. '\n')

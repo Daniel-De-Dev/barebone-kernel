@@ -26,7 +26,8 @@ local spl_image = required_environment_variable('VF2_SPL_IMAGE')
 local modem_send = tio_function('send')
 
 -- TODO: maybe add colors and formating to custom messages across all
--- echo/prints in project
+-- echo/prints in project. In general clean up all prints to terminal made,
+-- to not to repeat or state the obvious
 print('Ensure VF2 is powered on, bootmode set to UART and waiting for data')
 modem_send(spl_image, XMODEM_1K)
 

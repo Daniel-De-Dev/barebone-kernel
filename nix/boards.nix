@@ -85,6 +85,8 @@ in
       dramSize = size;
       opensbiAddress = base;
 
+      baudrate = 115200;
+
       /*
         U-boot's loading address must match `CONFIG_TEXT_BASE` from its u-boot
         config
