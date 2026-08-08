@@ -12,12 +12,19 @@ checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
 name = "bootloader"
 version = "0.1.0"
 dependencies = [
+ "log",
  "sbi-rt",
 ]
 
 [[package]]
 name = "kernel"
 version = "0.1.0"
+
+[[package]]
+name = "log"
+version = "0.4.33"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 
 [[package]]
 name = "sbi-rt"
