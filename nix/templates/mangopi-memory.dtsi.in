@@ -1,0 +1,6 @@
+/ {
+  memory@@dramUnitAddress@ {
+    device_type = "memory";
+    reg = <@dramBase@ @dramSize@>;
+  };
+};

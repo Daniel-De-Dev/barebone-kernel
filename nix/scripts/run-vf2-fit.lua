@@ -22,37 +22,8 @@ local function tio_function(name)
   error('tio does not provide ' .. name .. '()')
 end
 
-local uboot_image = required_environment_variable('VF2_UBOOT_IMAGE')
-local disk_image = required_environment_variable('VF2_DISK_IMAGE')
-local ram_disk_address = required_environment_variable('VF2_RAM_DISK_ADDRESS')
-local ram_disk_blocks = required_environment_variable('VF2_RAM_DISK_BLOCKS')
-local efi_load_address = required_environment_variable('VF2_EFI_LOAD_ADDRESS')
+local fit_image = required_environment_variable('VF2_FIT_IMAGE')
 
 local modem_send = tio_function('send')
-local serial_expect = tio_function('expect')
-local serial_write = tio_function('write')
 
-local function run_uboot_command(command)
-  serial_write(command .. '\n')
-  serial_expect('StarFive #')
-end
-
-modem_send(uboot_image, YMODEM)
-
-serial_expect('Hit any key to stop autoboot:')
-serial_write('\n')
-serial_expect('StarFive #')
-
-serial_write('loady ' .. ram_disk_address .. '\n')
-modem_send(disk_image, YMODEM)
-serial_expect('StarFive #')
-
-run_uboot_command('blkmap create ram-esp')
-run_uboot_command(
-  'blkmap map ram-esp 0 ' .. ram_disk_blocks .. ' mem ' .. ram_disk_address
-)
-run_uboot_command('blkmap get ram-esp dev espdev')
-run_uboot_command(
-  'load blkmap ${espdev}:1 ' .. efi_load_address .. ' EFI/BOOT/BOOTRISCV64.EFI'
-)
-serial_write('bootefi ' .. efi_load_address .. '\n')
+modem_send(fit_image, YMODEM)

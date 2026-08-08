@@ -1,0 +1,58 @@
+/dts-v1/;
+
+/ {
+  description = "VisionFive 2 Bare-Metal FIT";
+
+  #address-cells = <2>;
+
+  images {
+    firmware {
+      description = "OpenSBI FW_DYNAMIC";
+      data = /incbin/("fw_dynamic.bin");
+
+      type = "firmware";
+      arch = "riscv";
+      os = "opensbi";
+      compression = "none";
+
+      load = <0x0 @opensbiAddress@>;
+      entry = <0x0 @opensbiAddress@>;
+    };
+
+    bootloader {
+      description = "Barebone bootloader";
+      data = /incbin/("bootloader.bin");
+
+      type = "standalone";
+      arch = "riscv";
+      os = "u-boot"; //  NOTE: U-Boot SPL's searches for this spesifically
+      compression = "none";
+
+      load = <0x0 @bootloaderAddress@>;
+      entry = <0x0 @bootloaderAddress@>;
+    };
+
+    fdt_v1_3b {
+      description = "VisionFive 2 v1.3B";
+      data = /incbin/("vf2-v1.3b.dtb");
+
+      type = "flat_dt";
+      arch = "riscv";
+      compression = "none";
+
+      load = <0x0 @fdtAddress@>;
+    };
+  };
+
+  configurations {
+    default = "conf_v1_3b";
+
+    conf_v1_3b {
+      description = "starfive/jh7110-starfive-visionfive-2-v1.3b";
+
+      firmware = "firmware";
+      loadables = "bootloader";
+      fdt = "fdt_v1_3b";
+    };
+  };
+};

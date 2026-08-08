@@ -1,0 +1,39 @@
+ENTRY(_start)
+
+BASE_ADDRESS = @bootloaderAddress@;
+
+MEMORY
+{
+  BOOTLOADER (rwx) : ORIGIN = @bootloaderAddress@, LENGTH = @bootloaderRegionSize@
+}
+
+SECTIONS
+{
+  . = BASE_ADDRESS;
+
+  .text : {
+    *(.text.init)
+      *(.text .text.*)
+  } > BOOTLOADER
+
+  .rodata : {
+    *(.rodata .rodata.*)
+  } > BOOTLOADER
+
+  .data : {
+    *(.data .data.*)
+  } > BOOTLOADER
+
+  .bss : {
+    _bss_start = .;
+    *(.bss .bss.*)
+    _bss_end = .;
+  } > BOOTLOADER
+
+  .stack (NOLOAD) : {
+    . = ALIGN(16);
+    _stack_start = .;
+    . += 16K;
+    _stack_end = .;
+  } > BOOTLOADER
+}

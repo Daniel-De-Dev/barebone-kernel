@@ -4,6 +4,7 @@
       pkgs,
       system,
       lib,
+      boards,
       ...
     }:
     let
@@ -15,36 +16,45 @@
         cargo = rustToolchain;
         rustc = rustToolchain;
       };
-    in
-    {
-      packages = rec {
-        bootloader-debug = import ./bootloader.nix {
+
+      mkBootloader =
+        {
+          name,
+          board,
+          release,
+        }:
+        import ./bootloader.nix {
           inherit
             lib
             pkgs
             naersk'
-            rustToolchain
+            release
+            name
             ;
 
+          loadAddress = board.bootloaderAddress;
+          regionSize = board.bootloaderRegionSize;
+        };
+
+      mkBootloaderPackages = name: board: {
+        "bootloader-${name}-debug" = mkBootloader {
+          inherit name board;
           release = false;
         };
 
-        bootloader-release = import ./bootloader.nix {
-          inherit
-            lib
-            pkgs
-            naersk'
-            rustToolchain
-            ;
-
+        "bootloader-${name}" = mkBootloader {
+          inherit name board;
           release = true;
         };
-
-        bootloader = bootloader-release;
-        # TODO: Uncomment once ready to work on kernel and build properly defined
-        # kernel = import ./kernel.nix { inherit pkgs naersk'; };
-
-        default = bootloader;
       };
+    in
+    {
+      packages =
+        mkBootloaderPackages "qemu" boards.qemu
+        // mkBootloaderPackages "vf2" boards.visionfive2
+        // mkBootloaderPackages "mangopi" boards.mangopi;
+
+      # TODO:...
+      # kernel = import ./kernel.nix ...;
     };
 }

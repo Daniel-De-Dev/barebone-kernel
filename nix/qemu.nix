@@ -1,28 +1,50 @@
-_: {
+{ inputs, ... }: {
   perSystem =
     {
       config,
       pkgs,
       lib,
+      boards,
       ...
     }:
     let
+      opensbiLib = import ./opensbi.nix { inherit inputs lib pkgs; };
+
       /*
-        QEMU loads U-Boot SPL as the `virt` machine firmware and places the FIT
-        image at the address expected by the SPL. The FIT contains OpenSBI and
-        U-Boot proper. U-Boot then discovers the attached ESP as a VirtIO block
-        device and launches its default RISC-V EFI application.
+        QEMU loads OpenSBI as machine firmware and places the bootloader at its
+        fixed load address in DRAM. OpenSBI FW_JUMP then enters the bootloader
+        at that address in S-mode.
+
+        QEMU's `virt` machine provides its generated FDT to OpenSBI.
 
         Sources:
-        https://www.qemu.org/docs/master/system/riscv/virt.html#running-u-boot
-        https://docs.u-boot.org/en/stable/board/emulation/qemu-riscv.html
-        https://github.com/riscv-software-src/opensbi/blob/master/docs/platform/qemu_virt.md
+        https://www.qemu.org/docs/master/system/riscv/virt.html#hardware-configuration-information
       */
+      opensbiQemu = opensbiLib.mkJump {
+        name = "jump-qemu";
+        textStart = boards.qemu.opensbiAddress;
+        jumpAddress = boards.qemu.bootloaderAddress;
+      };
 
-      boards = import ./boards.nix { inherit lib; };
+      /*
+        Run the bootloader on QEMU's RISC-V `virt` machine.
 
+        OpenSBI FW_JUMP is installed as the machine firmware with `-bios`.
+        QEMU's generic loader places the raw bootloader image at the address
+        for which it was linked. The loader does not change the CPU entry
+        point; execution begins in OpenSBI, which later jumps to the
+        bootloader.
+
+        Sources:
+        https://www.qemu.org/docs/master/system/riscv/virt.html
+        https://www.qemu.org/docs/master/system/generic-loader.html
+      */
       mkRunQemu =
-        { programName, espImage }:
+        {
+          programName,
+          bootloader,
+          opensbi,
+        }:
         pkgs.writeShellApplication {
           name = programName;
 
@@ -32,9 +54,9 @@ _: {
           ];
 
           runtimeEnv = {
-            ESP_IMAGE = espImage;
-            UBOOT_IMAGE = config.packages.uboot-qemu;
-            FIT_LOAD_ADDRESS = boards.toHex boards.qemu.fitLoadAddress;
+            OPENSBI_IMAGE = "${opensbi}/fw_jump.bin";
+            BOOTLOADER_IMAGE = "${bootloader}/bin/bootloader.bin";
+            BOOTLOADER_ADDRESS = boards.toHex bootloader.loadAddress;
           };
 
           text = ''
@@ -50,12 +72,14 @@ _: {
       packages = {
         run-qemu-debug = mkRunQemu {
           programName = "run-qemu-debug";
-          espImage = config.packages.esp-image-debug;
+          bootloader = config.packages.bootloader-qemu-debug;
+          opensbi = opensbiQemu;
         };
 
         run-qemu = mkRunQemu {
           programName = "run-qemu";
-          espImage = config.packages.esp-image;
+          bootloader = config.packages.bootloader-qemu;
+          opensbi = opensbiQemu;
         };
       };
     };

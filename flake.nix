@@ -48,13 +48,14 @@
 
       imports = [
         inputs.standards.flakeModules.default
-        ./nix/firmware.nix
+
+        ./nix/boards.nix
         ./nix/packages.nix
         ./nix/devshells.nix
+
         ./nix/qemu.nix
-        ./nix/visionfive2.nix
         ./nix/mangopi.nix
-        ./nix/esp-image.nix
+        ./nix/visionfive2.nix
       ];
     };
 }

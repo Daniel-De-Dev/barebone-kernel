@@ -1,43 +1,135 @@
-_: {
+{ inputs, ... }: {
   perSystem =
     {
       config,
       pkgs,
+      boards,
       lib,
       ...
     }:
     let
+      riscvPkgs = pkgs.pkgsCross.riscv64;
+      crossCompile = riscvPkgs.stdenv.cc.targetPrefix;
+
+      board = boards.mangopi;
+
+      opensbiLib = import ./opensbi.nix { inherit inputs lib pkgs; };
+
+      mangoPiDtbName = "mangopi-mq-pro.dtb";
+      mangoPiDtsiName = "barebone-memory.dtsi";
+
       /*
-        The MangoPi MQ Pro FEL path starts after the D1 BootROM enters FEL mode.
-        xfel initializes DRAM, uploads U-Boot proper, an ESP disk image, and
-        OpenSBI FW_JUMP, then starts OpenSBI directly. No U-Boot SPL runs.
+        Build the DTB used by the MangoPi MQ Pro FEL boot path.
 
-        `xfel exec` does not provide an FDT address in a1. The firmware build
-        therefore embeds U-Boot's DTB in OpenSBI, which relocates it to the
-        configured staging address and passes it to U-Boot proper. Because no
-        SPL prepares the DTB, the U-Boot build adds the DRAM description. It
-        also reserves the uploaded ESP range so U-Boot does not overwrite that
-        memory.
+        The board DTS does not contain a DRAM memory node. Since the FEL path
+        enters OpenSBI without an SPL preparing the DTB, inject the known DRAM
+        region from the board memory map before building it.
 
-        U-Boot exposes the ESP through blkmap, loads `BOOTRISCV64.EFI` from its
-        FAT partition, and launches it with `bootefi`.
+        U-Boot proper is not built or used; its D1 source tree is only used to
+        build the board DTB.
+
+        Source:
+        https://github.com/smaeul/u-boot/blob/2e89b706f5c956a70c989cd31665f1429e9a0b48/arch/riscv/dts/sun20i-d1-mangopi-mq-pro.dts
+      */
+      mangoPiDtb = riscvPkgs.stdenv.mkDerivation {
+        pname = "mangopi-mq-pro-dtb";
+        version = inputs.src-uboot-d1.shortRev or "dirty";
+        src = inputs.src-uboot-d1;
+
+        postPatch = ''
+          patchShebangs scripts tools
+
+          substituteInPlace \
+            arch/riscv/dts/sun20i-d1-mangopi-mq-pro.dts \
+            --replace-fail \
+              '#include "sun20i-common-regulators.dtsi"' \
+              $'#include "sun20i-common-regulators.dtsi"\n#include "${mangoPiDtsiName}"'
+
+          install -Dm0644 \
+            ${./templates/mangopi-memory.dtsi.in} \
+            arch/riscv/dts/${mangoPiDtsiName}
+
+          substituteInPlace arch/riscv/dts/${mangoPiDtsiName} \
+            --replace-fail '@dramUnitAddress@' '${lib.toHexString boards.mangopi.dramBase}' \
+            --replace-fail '@dramBase@' '${boards.toHex boards.mangopi.dramBase}' \
+            --replace-fail '@dramSize@' '${boards.toHex boards.mangopi.dramSize}'
+        '';
+
+        nativeBuildInputs = with pkgs; [
+          bc
+          bison
+          flex
+          (python3.withPackages (ps: [
+            ps.libfdt
+            ps.setuptools_80
+          ]))
+          stdenv.cc
+          perl
+        ];
+
+        buildInputs = with pkgs; [
+          openssl
+          gnutls
+        ];
+
+        enableParallelBuilding = true;
+
+        env = {
+          ARCH = "riscv";
+          CROSS_COMPILE = crossCompile;
+          DTC = lib.getExe pkgs.dtc;
+        };
+
+        buildFlags = [ "u-boot.dtb" ];
+
+        configurePhase = ''
+          runHook preConfigure
+
+          make -j"$NIX_BUILD_CORES" mangopi_mq_pro_defconfig
+
+          runHook postConfigure
+        '';
+
+        installPhase = ''
+          runHook preInstall
+
+          install -Dm0644 \
+            u-boot.dtb \
+            "$out/${mangoPiDtbName}"
+
+          runHook postInstall
+        '';
+      };
+
+      opensbiMangoPi = opensbiLib.mkJump {
+        name = "mangopi-fel";
+        textStart = board.opensbiAddress;
+        jumpAddress = board.bootloaderAddress;
+        fdtPath = "${mangoPiDtb}/${mangoPiDtbName}";
+        inherit (board) fdtAddress;
+      };
+
+      /*
+        Boot the MangoPi MQ Pro through FEL.
+
+        xfel initializes the D1 DRAM controller, uploads the bootloader and
+        OpenSBI to their fixed addresses, then starts OpenSBI.
+
+        OpenSBI uses FW_JUMP because the next-stage bootloader is already
+        present at a fixed address. The FEL path does not supply OpenSBI with
+        a DTB, so the firmware embeds the generated board DTB and passes it
+        to the bootloader at the configured FDT address.
+
+        No U-Boot SPL or U-Boot proper runs.
 
         Sources:
         https://xfel.xboot.org/en/command/ddr
+        https://xfel.xboot.org/en/command/write
         https://xfel.xboot.org/en/command/exec
-        https://docs.u-boot.org/en/stable/usage/blkmap.html
         https://github.com/riscv-software-src/opensbi/blob/c0f87f10d1bfb9e72a84ddfafb5604ee1bfe9d04/docs/firmware/fw_jump.md
       */
-
-      boards = import ./boards.nix { inherit lib; };
-
       mkRunMangoPi =
-        {
-          programName,
-          espImage,
-          opensbi,
-          uboot,
-        }:
+        { programName, bootloader }:
         pkgs.writeShellApplication {
           name = programName;
 
@@ -48,16 +140,11 @@ _: {
           ];
 
           runtimeEnv = {
-            MANGOPI_OPENSBI_IMAGE = "${opensbi}/fw_jump.bin";
-            MANGOPI_OPENSBI_ADDRESS = boards.toHex boards.mangopi.opensbiAddress;
-            MANGOPI_UBOOT_IMAGE = "${uboot}/u-boot.bin";
-            MANGOPI_UBOOT_ADDRESS = boards.toHex boards.mangopi.ubootAddress;
-            MANGOPI_DISK_IMAGE = "${espImage}/disk.img";
-            MANGOPI_DISK_SIZE_FILE = "${espImage}/disk-size-bytes";
-            MANGOPI_RAM_DISK_ADDRESS = boards.toHex boards.mangopi.ramDiskAddress;
-            MANGOPI_EFI_LOAD_ADDRESS = boards.toHex boards.mangopi.efiLoadAddress;
-            MANGOPI_BAUDRATE = boards.mangopi.baudrate;
-            MANGOPI_TIO_SCRIPT = ./scripts/run-mangopi.lua;
+            MANGOPI_OPENSBI_IMAGE = "${opensbiMangoPi}/fw_jump.bin";
+            MANGOPI_OPENSBI_ADDRESS = boards.toHex board.opensbiAddress;
+            MANGOPI_BOOTLOADER_IMAGE = "${bootloader}/bin/bootloader.bin";
+            MANGOPI_BOOTLOADER_ADDRESS = boards.toHex board.bootloaderAddress;
+            MANGOPI_BAUDRATE = toString board.baudrate;
           };
 
           text = ''
@@ -69,19 +156,15 @@ _: {
     in
     {
       packages = {
-        # TODO: Define SD flashing (Should be the same process as for vf2?)
+        # TODO: Define SD flashing
         run-mangopi-debug = mkRunMangoPi {
           programName = "run-mangopi-debug";
-          espImage = config.packages.esp-image-debug;
-          opensbi = config.packages.opensbi-mangopi-fel-debug;
-          uboot = config.packages.uboot-mangopi-debug;
+          bootloader = config.packages.bootloader-mangopi-debug;
         };
 
         run-mangopi = mkRunMangoPi {
           programName = "run-mangopi";
-          espImage = config.packages.esp-image;
-          opensbi = config.packages.opensbi-mangopi-fel;
-          uboot = config.packages.uboot-mangopi;
+          bootloader = config.packages.bootloader-mangopi;
         };
       };
     };

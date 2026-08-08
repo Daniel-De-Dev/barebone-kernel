@@ -1,8 +1,8 @@
 set -euo pipefail
 
-esp_image="${ESP_IMAGE:?ESP_IMAGE must be set by Nix}"
-uboot_image="${UBOOT_IMAGE:?UBOOT_IMAGE must be set by Nix}"
-fit_load_address="${FIT_LOAD_ADDRESS:?FIT_LOAD_ADDRESS must be set by Nix}"
+opensbi_image="${OPENSBI_IMAGE:?OPENSBI_IMAGE must be set by Nix}"
+bootloader_image="${BOOTLOADER_IMAGE:?BOOTLOADER_IMAGE must be set by Nix}"
+bootloader_address="${BOOTLOADER_ADDRESS:?BOOTLOADER_ADDRESS must be set by Nix}"
 
 program_name="$(basename "$0")"
 
@@ -11,7 +11,7 @@ usage() {
   cat <<USAGE
 Usage: ${program_name} [OPTIONS]
 
-Run the RISC-V bootloader & kernel under QEMU.
+Boot the bootloader under QEMU.
 
 Options:
   --log FILE    Write QEMU output to FILE
@@ -49,28 +49,12 @@ while (($# > 0)); do
   esac
 done
 
-workdir="$(mktemp -d -t run-qemu.XXXXXX)"
-disk_image="${workdir}/disk.img"
-
-cleanup() {
-  rm -f -- "${disk_image}"
-  rmdir -- "${workdir}"
-}
-trap cleanup EXIT
-
-cp --reflink=auto "${esp_image}/disk.img" "${disk_image}"
-chmod u+w "${disk_image}"
-
 qemu_arguments=(
   -machine virt
   -m 1G
   -nographic
-  -bios "${uboot_image}/u-boot-spl"
-  -device "loader,file=${uboot_image}/u-boot.itb,addr=${fit_load_address}"
-  # Removes "No RNG device" warning
-  -object "rng-random,filename=/dev/urandom,id=rng0"
-  -device "virtio-rng-device,rng=rng0"
-  -drive "file=${disk_image},format=raw,if=virtio"
+  -bios "${opensbi_image}"
+  -device "loader,file=${bootloader_image},addr=${bootloader_address},force-raw=on"
 )
 
 if [[ ${gdb_enabled} == true ]]; then
