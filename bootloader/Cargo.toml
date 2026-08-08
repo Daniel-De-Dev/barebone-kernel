@@ -8,5 +8,5 @@ name = "bootloader"
 test = false
 bench = false
 
-[dependencies]
+[target.'cfg(target_arch = "riscv64")'.dependencies]
 sbi-rt = "0.0.4"

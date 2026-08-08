@@ -7,6 +7,8 @@
 
       toHex = value: "0x${lib.toHexString value}";
 
+      # TODO: implement more robust region checks/verification assertions
+
       # Project-defined memory-layout offsets relative to DRAM base
       bootloaderOffset = 2 * MiB; # 0x00200000
       bootloaderRegionSize = 1 * MiB;
