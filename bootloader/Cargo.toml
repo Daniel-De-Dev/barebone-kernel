@@ -15,4 +15,4 @@ log = { version = "0.4.33", features = [
 ] }
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
-sbi-rt = "0.0.4"
+sbi = "0.3.0"
