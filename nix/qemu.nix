@@ -82,5 +82,37 @@
           opensbi = opensbiQemu;
         };
       };
+
+      checks.qemu-boot-smoke =
+        pkgs.runCommand "qemu-boot-smoke"
+          {
+            nativeBuildInputs = [
+              pkgs.coreutils
+              pkgs.gnugrep
+            ];
+          }
+          ''
+            log="$TMPDIR/qemu.log"
+
+            set +e
+            timeout 5s ${config.packages.run-qemu}/bin/run-qemu \
+              >"$log" 2>&1
+            status=$?
+            set -e
+
+            if [ "$status" -ne 124 ]; then
+              echo "QEMU exited unexpectedly with status $status" >&2
+              cat "$log" >&2
+              exit 1
+            fi
+
+            if ! grep -Fq "bootloader entered" "$log"; then
+              echo "Bootloader did not reach main" >&2
+              cat "$log" >&2
+              exit 1
+            fi
+
+            touch "$out"
+          '';
     };
 }

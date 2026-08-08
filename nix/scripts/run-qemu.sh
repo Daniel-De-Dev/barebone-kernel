@@ -69,5 +69,5 @@ if [[ -n ${log_file} ]]; then
   qemu-system-riscv64 "${qemu_arguments[@]}" 2>&1 |
     tee "${log_file}"
 else
-  qemu-system-riscv64 "${qemu_arguments[@]}"
+  exec qemu-system-riscv64 "${qemu_arguments[@]}"
 fi
