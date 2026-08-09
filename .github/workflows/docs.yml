@@ -34,13 +34,12 @@ jobs:
 
       - name: Add redirect index.html
         run: |
-          CRATE_NAME=$(echo "${{ github.event.repository.name }}" | tr '-' '_')
-          echo "<meta http-equiv=\"refresh\" content=\"0; url=${CRATE_NAME}/index.html\">" > target/doc/index.html
+          echo "<meta http-equiv=\"refresh\" content=\"0; url=bootloader/index.html\">" > target/riscv64gc-unknown-none-elf/doc/index.html
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: "target/doc"
+          path: "target/riscv64gc-unknown-none-elf/doc"
 
       - name: Deploy to GitHub Pages
         id: deployment
