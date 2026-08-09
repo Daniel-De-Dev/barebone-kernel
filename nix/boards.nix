@@ -10,7 +10,7 @@
       # TODO: implement more robust region checks/verification assertions
 
       # Project-defined memory-layout offsets relative to DRAM base
-      kernelOffset = 2 * MiB; # 0x00200000
+      kernelOffset = 1 * MiB; # 0x00100000
       kernelRegionSize = 1 * MiB;
 
       fdtOffset = 64 * MiB; # 0x04000000
