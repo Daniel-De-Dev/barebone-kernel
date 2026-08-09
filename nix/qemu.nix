@@ -11,8 +11,8 @@
       opensbiLib = import ./opensbi.nix { inherit inputs lib pkgs; };
 
       /*
-        QEMU loads OpenSBI as machine firmware and places the bootloader at its
-        fixed load address in DRAM. OpenSBI FW_JUMP then enters the bootloader
+        QEMU loads OpenSBI as machine firmware and places the kernel at its
+        fixed load address in DRAM. OpenSBI FW_JUMP then enters the kernel
         at that address in S-mode.
 
         QEMU's `virt` machine provides its generated FDT to OpenSBI.
@@ -23,17 +23,17 @@
       opensbiQemu = opensbiLib.mkJump {
         name = "jump-qemu";
         textStart = boards.qemu.opensbiAddress;
-        jumpAddress = boards.qemu.bootloaderAddress;
+        jumpAddress = boards.qemu.kernelAddress;
       };
 
       /*
-        Run the bootloader on QEMU's RISC-V `virt` machine.
+        Run the kernel on QEMU's RISC-V `virt` machine.
 
         OpenSBI FW_JUMP is installed as the machine firmware with `-bios`.
-        QEMU's generic loader places the raw bootloader image at the address
+        QEMU's generic loader places the raw kernel image at the address
         for which it was linked. The loader does not change the CPU entry
         point; execution begins in OpenSBI, which later jumps to the
-        bootloader.
+        kernel.
 
         Sources:
         https://www.qemu.org/docs/master/system/riscv/virt.html
@@ -42,7 +42,7 @@
       mkRunQemu =
         {
           programName,
-          bootloader,
+          kernel,
           opensbi,
         }:
         pkgs.writeShellApplication {
@@ -55,8 +55,8 @@
 
           runtimeEnv = {
             OPENSBI_IMAGE = "${opensbi}/fw_jump.bin";
-            BOOTLOADER_IMAGE = "${bootloader}/bin/bootloader.bin";
-            BOOTLOADER_ADDRESS = boards.toHex bootloader.loadAddress;
+            KERNEL_IMAGE = "${kernel}/bin/kernel.bin";
+            KERNEL_ADDRESS = boards.toHex kernel.loadAddress;
           };
 
           text = ''
@@ -72,13 +72,13 @@
       packages = {
         run-qemu-debug = mkRunQemu {
           programName = "run-qemu-debug";
-          bootloader = config.packages.bootloader-qemu-debug;
+          kernel = config.packages.kernel-qemu-debug;
           opensbi = opensbiQemu;
         };
 
         run-qemu = mkRunQemu {
           programName = "run-qemu";
-          bootloader = config.packages.bootloader-qemu;
+          kernel = config.packages.kernel-qemu;
           opensbi = opensbiQemu;
         };
       };
@@ -106,8 +106,8 @@
               exit 1
             fi
 
-            if ! grep -Fq "bootloader entered" "$log"; then
-              echo "Bootloader did not reach main" >&2
+            if ! grep -Fq "kernel entered" "$log"; then
+              echo "kernel did not reach main" >&2
               cat "$log" >&2
               exit 1
             fi

@@ -1,8 +1,8 @@
 set -euo pipefail
 
 opensbi_image="${OPENSBI_IMAGE:?OPENSBI_IMAGE must be set by Nix}"
-bootloader_image="${BOOTLOADER_IMAGE:?BOOTLOADER_IMAGE must be set by Nix}"
-bootloader_address="${BOOTLOADER_ADDRESS:?BOOTLOADER_ADDRESS must be set by Nix}"
+kernel_image="${KERNEL_IMAGE:?KERNEL_IMAGE must be set by Nix}"
+kernel_address="${KERNEL_ADDRESS:?KERNEL_ADDRESS must be set by Nix}"
 
 program_name="$(basename "$0")"
 
@@ -11,7 +11,7 @@ usage() {
   cat <<USAGE
 Usage: ${program_name} [OPTIONS]
 
-Boot the bootloader under QEMU.
+Boot the kernel under QEMU.
 
 Options:
   --log FILE    Write QEMU output to FILE
@@ -54,7 +54,7 @@ qemu_arguments=(
   -m 1G
   -nographic
   -bios "${opensbi_image}"
-  -device "loader,file=${bootloader_image},addr=${bootloader_address},force-raw=on"
+  -device "loader,file=${kernel_image},addr=${kernel_address},force-raw=on"
 )
 
 if [[ ${gdb_enabled} == true ]]; then

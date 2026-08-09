@@ -11,7 +11,7 @@ usage() {
   cat <<USAGE
 Usage: ${program_name} [SERIAL_DEVICE]
 
-Boot the bootloader on a VisionFive 2 over UART.
+Boot the kernel on a VisionFive 2 over UART.
 
 SERIAL_DEVICE defaults to VF2_SERIAL_PORT when set, otherwise /dev/ttyUSB0.
 

@@ -1,4 +1,4 @@
-//! Architecture-specific bootloader support.
+//! Architecture-specific kernel support.
 //!
 //! This module provides a common interface to functionality whose
 //! implementation depends on the target architecture.

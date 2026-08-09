@@ -1,10 +1,10 @@
 ENTRY(_start)
 
-BASE_ADDRESS = @bootloaderAddress@;
+BASE_ADDRESS = @kernelAddress@;
 
 MEMORY
 {
-  BOOTLOADER (rwx) : ORIGIN = @bootloaderAddress@, LENGTH = @bootloaderRegionSize@
+  KERNEL (rwx) : ORIGIN = @kernelAddress@, LENGTH = @kernelRegionSize@
 }
 
 SECTIONS
@@ -14,12 +14,12 @@ SECTIONS
   .text : {
     KEEP(*(.text.init))
     *(.text .text.*)
-  } > BOOTLOADER
+  } > KERNEL
 
   .rodata : {
     *(.srodata .srodata.*)
     *(.rodata .rodata.*)
-  } > BOOTLOADER
+  } > KERNEL
 
   .data : {
     . = ALIGN(8);
@@ -28,7 +28,7 @@ SECTIONS
 
     *(.sdata .sdata.*)
     *(.data .data.*)
-  } > BOOTLOADER
+  } > KERNEL
 
   .bss (NOLOAD) : {
     . = ALIGN(8);
@@ -41,7 +41,7 @@ SECTIONS
 
     . = ALIGN(8);
     _bss_end = .;
-  } > BOOTLOADER
+  } > KERNEL
 
   .stack (NOLOAD) : {
     . = ALIGN(16);
@@ -49,5 +49,5 @@ SECTIONS
     _stack_start = .;
     . += 16K;
     _stack_end = .;
-  } > BOOTLOADER
+  } > KERNEL
 }

@@ -1,7 +1,7 @@
-//! Bootloader logging support.
+//! Kernel logging support.
 //!
 //! This module provides lightweight logging macros that format messages and
-//! write them to the bootloader console.
+//! write them to the kernel console.
 
 use crate::console::Console;
 use core::fmt::{self, Write};
@@ -30,7 +30,7 @@ impl fmt::Display for Level {
   }
 }
 
-/// Writes one formatted log record to the bootloader console.
+/// Writes one formatted log record to the kernel console.
 pub(crate) fn write(level: Level, file: &str, line: u32, args: fmt::Arguments<'_>) {
   let mut console = Console;
 
@@ -56,7 +56,7 @@ macro_rules! debug {
   }};
 }
 
-/// Logs information about normal bootloader operation.
+/// Logs information about normal kernel operation.
 macro_rules! info {
   ($($arg:tt)*) => {
     $crate::logging::write(

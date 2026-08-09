@@ -17,13 +17,13 @@
         rustc = rustToolchain;
       };
 
-      mkBootloader =
+      mkKernel =
         {
           name,
           board,
           release,
         }:
-        import ./bootloader.nix {
+        import ./kernel.nix {
           inherit
             lib
             pkgs
@@ -32,17 +32,17 @@
             name
             ;
 
-          loadAddress = board.bootloaderAddress;
-          regionSize = board.bootloaderRegionSize;
+          loadAddress = board.kernelAddress;
+          regionSize = board.kernelRegionSize;
         };
 
-      mkBootloaderPackages = name: board: {
-        "bootloader-${name}-debug" = mkBootloader {
+      mkKernelPackages = name: board: {
+        "kernel-${name}-debug" = mkKernel {
           inherit name board;
           release = false;
         };
 
-        "bootloader-${name}" = mkBootloader {
+        "kernel-${name}" = mkKernel {
           inherit name board;
           release = true;
         };
@@ -50,11 +50,8 @@
     in
     {
       packages =
-        mkBootloaderPackages "qemu" boards.qemu
-        // mkBootloaderPackages "vf2" boards.visionfive2
-        // mkBootloaderPackages "mangopi" boards.mangopi;
-
-      # TODO:...
-      # kernel = import ./kernel.nix ...;
+        mkKernelPackages "qemu" boards.qemu
+        // mkKernelPackages "vf2" boards.visionfive2
+        // mkKernelPackages "mangopi" boards.mangopi;
     };
 }

@@ -19,17 +19,17 @@
       entry = <0x0 @opensbiAddress@>;
     };
 
-    bootloader {
-      description = "Barebone bootloader";
-      data = /incbin/("bootloader.bin");
+    kernel {
+      description = "Barebone kernel";
+      data = /incbin/("kernel.bin");
 
       type = "standalone";
       arch = "riscv";
       os = "u-boot"; //  NOTE: U-Boot SPL's searches for this spesifically
       compression = "none";
 
-      load = <0x0 @bootloaderAddress@>;
-      entry = <0x0 @bootloaderAddress@>;
+      load = <0x0 @kernelAddress@>;
+      entry = <0x0 @kernelAddress@>;
     };
 
     fdt_v1_3b {
@@ -51,7 +51,7 @@
       description = "starfive/jh7110-starfive-visionfive-2-v1.3b";
 
       firmware = "firmware";
-      loadables = "bootloader";
+      loadables = "kernel";
       fdt = "fdt_v1_3b";
     };
   };

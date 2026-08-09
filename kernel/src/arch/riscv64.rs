@@ -1,11 +1,11 @@
-//! RISC-V 64-bit architecture support for the bootloader.
+//! RISC-V 64-bit architecture support for the kernel.
 //!
 //! This module provides the architecture-specific boundary between the
-//! bootloader's Rust code and an RV64 execution environment.
+//! kernel's Rust code and an RV64 execution environment.
 //!
 //! It is responsible for the earliest CPU setup required before entering
 //! Rust and for CPU-specific primitives used by the rest of the
-//! bootloader.
+//! kernel.
 //!
 //! # Entry
 //!
@@ -29,7 +29,7 @@
 
 use core::arch::{asm, global_asm};
 
-// Bootloader entry point.
+// Kernel entry point.
 //
 // Establish the minimum execution environment required by Rust before
 // transferring control to `main`.

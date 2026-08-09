@@ -1,7 +1,7 @@
 //! RISC-V Supervisor Binary Interface support.
 //!
 //! This module implements the minimal subset of the SBI Debug Console
-//! extension required by the bootloader, as specified by
+//! extension required by the kernel, as specified by
 //! [the RISC-V SBI documentation](https://github.com/riscv-non-isa/riscv-sbi-doc/blob/8a545effe9b50484ff897d9815d7d9015cdef203/src/ext-debug-console.adoc).
 
 use core::arch::asm;

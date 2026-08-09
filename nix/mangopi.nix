@@ -104,7 +104,7 @@
       opensbiMangoPi = opensbiLib.mkJump {
         name = "mangopi-fel";
         textStart = board.opensbiAddress;
-        jumpAddress = board.bootloaderAddress;
+        jumpAddress = board.kernelAddress;
         fdtPath = "${mangoPiDtb}/${mangoPiDtbName}";
         inherit (board) fdtAddress;
       };
@@ -112,13 +112,13 @@
       /*
         Boot the MangoPi MQ Pro through FEL.
 
-        xfel initializes the D1 DRAM controller, uploads the bootloader and
+        xfel initializes the D1 DRAM controller, uploads the kernel and
         OpenSBI to their fixed addresses, then starts OpenSBI.
 
-        OpenSBI uses FW_JUMP because the next-stage bootloader is already
+        OpenSBI uses FW_JUMP because the next-stage kernel is already
         present at a fixed address. The FEL path does not supply OpenSBI with
         a DTB, so the firmware embeds the generated board DTB and passes it
-        to the bootloader at the configured FDT address.
+        to the kernel at the configured FDT address.
 
         No U-Boot SPL or U-Boot proper runs.
 
@@ -129,7 +129,7 @@
         https://github.com/riscv-software-src/opensbi/blob/c0f87f10d1bfb9e72a84ddfafb5604ee1bfe9d04/docs/firmware/fw_jump.md
       */
       mkRunMangoPi =
-        { programName, bootloader }:
+        { programName, kernel }:
         pkgs.writeShellApplication {
           name = programName;
 
@@ -142,8 +142,8 @@
           runtimeEnv = {
             MANGOPI_OPENSBI_IMAGE = "${opensbiMangoPi}/fw_jump.bin";
             MANGOPI_OPENSBI_ADDRESS = boards.toHex board.opensbiAddress;
-            MANGOPI_BOOTLOADER_IMAGE = "${bootloader}/bin/bootloader.bin";
-            MANGOPI_BOOTLOADER_ADDRESS = boards.toHex board.bootloaderAddress;
+            MANGOPI_KERNEL_IMAGE = "${kernel}/bin/kernel.bin";
+            MANGOPI_KERNEL_ADDRESS = boards.toHex board.kernelAddress;
             MANGOPI_BAUDRATE = toString board.baudrate;
           };
 
@@ -159,12 +159,12 @@
         # TODO: Define SD flashing
         run-mangopi-debug = mkRunMangoPi {
           programName = "run-mangopi-debug";
-          bootloader = config.packages.bootloader-mangopi-debug;
+          kernel = config.packages.kernel-mangopi-debug;
         };
 
         run-mangopi = mkRunMangoPi {
           programName = "run-mangopi";
-          bootloader = config.packages.bootloader-mangopi;
+          kernel = config.packages.kernel-mangopi;
         };
       };
     };

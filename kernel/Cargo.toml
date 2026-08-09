@@ -3,4 +3,7 @@ name = "kernel"
 version = "0.1.0"
 edition = "2024"
 
-[dependencies]
+[[bin]]
+name = "kernel"
+test = false
+bench = false

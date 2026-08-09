@@ -1,4 +1,4 @@
-//! Bootloader console output.
+//! Kernel console output.
 //!
 //! This module provides the console backend used for text output.
 

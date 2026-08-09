@@ -10,8 +10,8 @@
       # TODO: implement more robust region checks/verification assertions
 
       # Project-defined memory-layout offsets relative to DRAM base
-      bootloaderOffset = 2 * MiB; # 0x00200000
-      bootloaderRegionSize = 1 * MiB;
+      kernelOffset = 2 * MiB; # 0x00200000
+      kernelRegionSize = 1 * MiB;
 
       fdtOffset = 64 * MiB; # 0x04000000
     in
@@ -30,10 +30,10 @@
             dramBase = 2 * GiB; # 0x80000000
           in
           {
-            inherit bootloaderRegionSize;
+            inherit kernelRegionSize;
 
             opensbiAddress = dramBase;
-            bootloaderAddress = dramBase + bootloaderOffset;
+            kernelAddress = dramBase + kernelOffset;
           };
 
         visionfive2 =
@@ -47,10 +47,10 @@
             dramBase = 1 * GiB; # 0x40000000
           in
           {
-            inherit bootloaderRegionSize;
+            inherit kernelRegionSize;
 
             opensbiAddress = dramBase;
-            bootloaderAddress = dramBase + bootloaderOffset;
+            kernelAddress = dramBase + kernelOffset;
             fdtAddress = dramBase + fdtOffset;
 
             # The BootROM UART recovery protocol uses 115200 baud
@@ -86,12 +86,12 @@
             dramSize = 512 * MiB; # 0x20000000
           in
           {
-            inherit bootloaderRegionSize;
+            inherit kernelRegionSize;
 
             inherit dramBase dramSize;
             opensbiAddress = dramBase;
 
-            bootloaderAddress = dramBase + bootloaderOffset;
+            kernelAddress = dramBase + kernelOffset;
             fdtAddress = dramBase + fdtOffset;
             baudrate = 115200;
           };

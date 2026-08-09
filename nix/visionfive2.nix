@@ -21,7 +21,7 @@
       };
 
       /*
-        Build the U-Boot SPL used as the VisionFive 2 first-stage bootloader.
+        Build the U-Boot SPL used as the VisionFive 2 first-stage kernel.
 
         SPL is used only for the board's early hardware and DRAM
         initialization and for loading the next-stage FIT image. U-Boot proper
@@ -99,11 +99,11 @@
       /*
         Build the FIT consumed by the VisionFive 2 U-Boot SPL.
 
-        The image contains OpenSBI FW_DYNAMIC, the bootloader, and
+        The image contains OpenSBI FW_DYNAMIC, the kernel, and
         the board DTB.
       */
       mkVisionFive2Fit =
-        { name, bootloader }:
+        { name, kernel }:
         pkgs.stdenv.mkDerivation {
           pname = "visionfive2-fit-${name}";
           version = "0.1.0";
@@ -125,14 +125,14 @@
                 '@opensbiAddress@' \
                 '${boards.toHex boards.visionfive2.opensbiAddress}' \
               --replace-fail \
-                '@bootloaderAddress@' \
-                '${boards.toHex bootloader.loadAddress}' \
+                '@kernelAddress@' \
+                '${boards.toHex kernel.loadAddress}' \
               --replace-fail \
                 '@fdtAddress@' \
                 '${boards.toHex boards.visionfive2.fdtAddress}'
 
             ln -s ${opensbiVisionFive2}/fw_dynamic.bin fw_dynamic.bin
-            ln -s ${bootloader}/bin/bootloader.bin bootloader.bin
+            ln -s ${kernel}/bin/kernel.bin kernel.bin
             ln -s \
               ${visionFive2Spl}/dtb/${visionFive2Dtb} \
               vf2-v1.3b.dtb
@@ -153,7 +153,7 @@
         The BootROM receives U-Boot SPL. SPL then performs the board's early
         hardware and DRAM initialization, then receives the custom FIT image.
 
-        The FIT contains OpenSBI FW_DYNAMIC, the bootloader, and the board DTB.
+        The FIT contains OpenSBI FW_DYNAMIC, the kernel, and the board DTB.
 
         Sources:
         https://github.com/u-boot/u-boot/blob/baa64b2f892890f00a377eac4a3e685472bb56b5/common/spl/spl_opensbi.c
@@ -186,7 +186,7 @@
         programName = "run-vf2-debug";
         fitImage = mkVisionFive2Fit {
           name = "debug";
-          bootloader = config.packages.bootloader-vf2-debug;
+          kernel = config.packages.kernel-vf2-debug;
         };
       };
 
@@ -194,7 +194,7 @@
         programName = "run-vf2";
         fitImage = mkVisionFive2Fit {
           name = "release";
-          bootloader = config.packages.bootloader-vf2;
+          kernel = config.packages.kernel-vf2;
         };
       };
     in
