@@ -13,6 +13,7 @@
       kernelOffset = 1 * MiB; # 0x00100000
       kernelRegionSize = 1 * MiB;
 
+      # TODO: Move fdt closer to kernel and add asserts for overlap check
       fdtOffset = 64 * MiB; # 0x04000000
     in
     {
