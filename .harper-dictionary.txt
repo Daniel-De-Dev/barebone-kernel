@@ -1,6 +1,7 @@
 D1
 DTB
 DTS
+FDT
 FEL
 I/O
 MQ
@@ -8,3 +9,5 @@ MangoPi
 OpenSBI
 SBI
 SPL
+devicetree
+v0

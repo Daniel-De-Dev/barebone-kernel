@@ -13,7 +13,7 @@ const DBCN_EID: usize = 0x4442_434E;
 const DBCN_WRITE_BYTE_FID: usize = 2;
 
 /// Errors returned when writing a byte through the SBI debug console.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) enum WriteByteError {
   /// Failed to write the byte due to I/O errors.
   Failed,
