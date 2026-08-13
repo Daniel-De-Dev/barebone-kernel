@@ -1,0 +1,10 @@
+D1
+DTB
+DTS
+FEL
+I/O
+MQ
+MangoPi
+OpenSBI
+SBI
+SPL
