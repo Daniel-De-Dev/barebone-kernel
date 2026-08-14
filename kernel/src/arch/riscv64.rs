@@ -75,7 +75,7 @@ _start:
 /// This repeatedly executes the RISC-V `wfi` (Wait for Interrupt)
 /// instruction. Because `wfi` may resume, it is executed in a loop so this
 /// function never returns.
-pub fn halt() -> ! {
+pub(crate) fn halt() -> ! {
   loop {
     unsafe {
       asm!("wfi", options(nomem, nostack));

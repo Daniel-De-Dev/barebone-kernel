@@ -4,4 +4,4 @@
 //! in which the kernel executes.
 
 #[cfg(target_arch = "riscv64")]
-pub(crate) mod sbi;
+pub(super) mod sbi;

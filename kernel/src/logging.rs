@@ -7,7 +7,7 @@ use crate::console::Console;
 use core::fmt::{self, Write};
 
 /// Logging severity.
-pub(crate) enum Level {
+pub(super) enum Level {
   /// Detailed diagnostic information useful during debugging.
   Debug,
 
@@ -31,7 +31,7 @@ impl fmt::Display for Level {
 }
 
 /// Writes one formatted log record to the kernel console.
-pub(crate) fn write(level: Level, file: &str, line: u32, args: fmt::Arguments<'_>) {
+pub(super) fn write(level: Level, file: &str, line: u32, args: fmt::Arguments<'_>) {
   let mut console = Console;
 
   if writeln!(console, "[{level:<5}] {file:>20}:{line:<3} | {args}").is_err() {
@@ -90,4 +90,4 @@ macro_rules! info {
 //   };
 // }
 
-pub(crate) use {debug, info};
+pub(super) use {debug, info};
