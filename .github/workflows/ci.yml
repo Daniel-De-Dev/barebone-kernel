@@ -13,6 +13,9 @@ jobs:
   check:
     name: Flake Check
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -20,5 +23,34 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/determinate-nix-action@main
 
-      - name: Run Nix Flake Check
+      - name: Run flake checks
         run: nix flake check -L
+
+      - name: Build documentation
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: nix build .#docs -L
+
+      - name: Upload documentation
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: result
+
+  deploy:
+    name: Deploy documentation
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: check
+    runs-on: ubuntu-latest
+
+    permissions:
+      pages: write
+      id-token: write
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

@@ -51,6 +51,7 @@
 
         ./nix/boards.nix
         ./nix/packages.nix
+        ./nix/docs.nix
         ./nix/devshells.nix
 
         ./nix/qemu.nix
