@@ -70,7 +70,9 @@
       packages.docs = docs;
       checks.docs = docs;
 
+      # TODO: Add a way to generate documentation coverage stats
       apps.docs = {
+        meta.description = "Generates the docs and opens in default browser";
         type = "app";
         program = "${openDocs}/bin/open-docs";
       };

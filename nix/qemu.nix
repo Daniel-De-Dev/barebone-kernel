@@ -70,6 +70,7 @@
     in
     {
       packages = {
+        # TODO: Rename all "nix run .#run-*" to no longer start with run
         run-qemu-debug = mkRunQemu {
           programName = "run-qemu-debug";
           kernel = config.packages.kernel-qemu-debug;

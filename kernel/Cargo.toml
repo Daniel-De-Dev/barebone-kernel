@@ -3,6 +3,9 @@ name = "kernel"
 version = "0.1.0"
 edition = "2024"
 
+[dependencies]
+fdt = { path = "../fdt" }
+
 [[bin]]
 name = "kernel"
 test = false

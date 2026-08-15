@@ -51,8 +51,9 @@
 
         ./nix/boards.nix
         ./nix/packages.nix
-        ./nix/docs.nix
         ./nix/devshells.nix
+        ./nix/docs.nix
+        ./nix/tests.nix
 
         ./nix/qemu.nix
         ./nix/mangopi.nix
