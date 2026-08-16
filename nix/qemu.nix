@@ -95,7 +95,7 @@
             log="$TMPDIR/qemu.log"
 
             set +e
-            timeout 5s ${config.packages.run-qemu}/bin/run-qemu \
+            timeout 5s ${config.packages.qemu}/bin/run-qemu \
               >"$log" 2>&1
             status=$?
             set -e
