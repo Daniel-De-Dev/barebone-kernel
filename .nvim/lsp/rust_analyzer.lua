@@ -36,28 +36,28 @@ return {
     },
   },
 
-  ---@param _ lsp.InitializeParams
-  ---@param config vim.lsp.ClientConfig
   before_init = function(_, config)
     local root = vim.fs.normalize(config.root_dir)
 
+    ---@type lsp.LSPObject
+    local settings = assert(config.settings)
+    local current = settings['rust-analyzer']
+
+    assert(type(current) == 'table')
+
     if root == kernel_root then
-      config.settings = vim.tbl_deep_extend('force', config.settings or {}, {
-        ['rust-analyzer'] = {
-          cargo = {
-            target = 'riscv64gc-unknown-none-elf',
-          },
-          check = {
-            allTargets = false,
-          },
+      settings['rust-analyzer'] = vim.tbl_deep_extend('force', current, {
+        cargo = {
+          target = 'riscv64gc-unknown-none-elf',
+        },
+        check = {
+          allTargets = false,
         },
       })
     elseif root == fdt_root then
-      config.settings = vim.tbl_deep_extend('force', config.settings or {}, {
-        ['rust-analyzer'] = {
-          check = {
-            allTargets = true,
-          },
+      settings['rust-analyzer'] = vim.tbl_deep_extend('force', current, {
+        check = {
+          allTargets = true,
         },
       })
     end
