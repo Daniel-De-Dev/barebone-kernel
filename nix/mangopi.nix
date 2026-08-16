@@ -159,12 +159,12 @@
     {
       packages = {
         # TODO: Define SD flashing
-        run-mangopi-debug = mkRunMangoPi {
+        mangopi-debug = mkRunMangoPi {
           programName = "run-mangopi-debug";
           kernel = config.packages.kernel-mangopi-debug;
         };
 
-        run-mangopi = mkRunMangoPi {
+        mangopi = mkRunMangoPi {
           programName = "run-mangopi";
           kernel = config.packages.kernel-mangopi;
         };

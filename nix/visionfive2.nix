@@ -203,8 +203,8 @@
       # TODO: formatting an SD card
       # TODO: Maybe also flash the QSPI NOR Flash memory? (WARN: Will be overwriting factory firmware)
       packages = {
-        run-vf2 = runVisionFive2;
-        run-vf2-debug = runVisionFive2Debug;
+        vf2 = runVisionFive2;
+        vf2-debug = runVisionFive2Debug;
       };
     };
 }
