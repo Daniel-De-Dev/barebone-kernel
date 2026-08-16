@@ -1,25 +1,107 @@
+//! Parsing and validation of the FDT header.
+//!
+//! Every FDT begins with a fixed-size header containing the information required
+//! to locate and interpret the memory reservation, structure, and strings blocks
+//! of the blob.
+//!
+//! This module validates the header before any of the variable-sized FDT blocks
+//! are parsed.
+//!
+//! Validation of data contained within those blocks is left to their respective
+//! parsers. Bounds and overlap validation for the memory reservation block is
+//! deferred, as its size can only be determined while parsing it.
+//!
+//! Implementation based on Devicetree Specification v0.4.
+
 use crate::error::Error;
 
+/// Size of an FDT header in bytes.
 const HEADER_SIZE: u32 = 40;
 
+/// Magic value identifying an FDT.
 const FDT_MAGIC: u32 = 0xd00d_feed;
+
+/// Minimum FDT format version supported by this parser.
 const SUPPORTED_VERSION: u32 = 17;
 
-// INFO: pub is placed temporary to let kernel access these directly
+/// Parsed data from an FDT header.
+///
+/// Construction is performed through [`Header::parse`], which validates the
+/// header before returning a `Header`.
 #[derive(Debug, Clone)]
+// INFO: pub is placed temporary to let kernel access these directly
 pub struct Header {
+  /// Total size of the FDT blob, in bytes.
   total_size: u32,
+
+  /// Byte offset from the beginning of the FDT header to the structure block.
   off_dt_struct: u32,
+
+  /// Byte offset from the beginning of the FDT header to the strings block.
   off_dt_strings: u32,
+
+  /// Byte offset from the beginning of the FDT header to the memory reservation
+  /// block.
   off_mem_rsvmap: u32,
+
+  /// Version of the FDT data structure.
   version: u32,
+
+  /// Lowest FDT data structure version with which this blob is backwards
+  /// compatible.
   last_comp_version: u32,
+
+  /// Physical ID of the CPU on which the system booted.
   boot_cpuid_phys: u32,
+
+  /// Size of the strings block, in bytes.
   size_dt_strings: u32,
+
+  /// Size of the structure block, in bytes.
   size_dt_struct: u32,
 }
 
 impl Header {
+  /// Parses and validates an FDT header.
+  ///
+  /// `bytes` must contain exactly the 40-byte FDT header. Each field is decoded
+  /// from its big-endian representation and the resulting layout is checked
+  /// before a [`Header`] is returned.
+  ///
+  /// Validation currently ensures that:
+  ///
+  /// - The FDT magic value is valid.
+  /// - The declared total size can contain the header.
+  /// - The FDT version and backwards-compatibility version are supported.
+  /// - The memory reservation block is 8-byte aligned.
+  /// - The structure block is 4-byte aligned.
+  /// - Block offsets do not point inside the header.
+  /// - Computing known block boundaries does not overflow.
+  /// - The structure and strings blocks fit within the declared total size.
+  /// - And the structure and strings blocks do not overlap.
+  ///
+  /// The size of the memory reservation block is not encoded directly in the
+  /// header. Its complete bounds therefore cannot be validated here and must be
+  /// checked when that block is parsed.
+  ///
+  /// # Errors
+  ///
+  /// Returns:
+  ///
+  /// - [`Error::InvalidMagic`] if the FDT magic value is incorrect.
+  /// - [`Error::TotalSizeTooSmall`] if the FDT is smaller than the
+  ///   header itself.
+  /// - [`Error::UnsupportedVersion`] if the FDT version or declared
+  ///   backwards-compatible version is unsupported.
+  /// - [`Error::MisalignedReservationBlock`] if the memory reservation block is
+  ///   not 8-byte aligned.
+  /// - [`Error::MisalignedStructureBlock`] if the structure block is not
+  ///   4-byte aligned.
+  /// - [`Error::IntegerOverflow`] if calculating the end of a block overflows.
+  /// - [`Error::InvalidOffset`] if a block begins inside the header.
+  /// - [`Error::OutOfBounds`] if a known block extends beyond the declared FDT
+  ///   size.
+  /// - [`Error::BlocksOverlap`] if the structure and strings blocks overlap.
   // INFO: pub is placed temporary to let kernel access these directly
   pub fn parse(bytes: &[u8; 40]) -> Result<Self, Error> {
     let magic = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
@@ -108,7 +190,6 @@ mod tests {
   use crate::error::Error;
 
   // Helper to generate a known-good FDT header.
-  // All values are Big-Endian as per the Devicetree specification.
   fn valid_header_bytes() -> [u8; 40] {
     let mut bytes = [0u8; 40];
 
