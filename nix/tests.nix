@@ -48,7 +48,7 @@
           type = "app";
           program = "${run-tests}/bin/run-tests";
         };
-        coverage = {
+        test-coverage = {
           meta.description = "Generates and opens a report on test coverage";
           type = "app";
           program = "${run-coverage}/bin/run-coverage";
