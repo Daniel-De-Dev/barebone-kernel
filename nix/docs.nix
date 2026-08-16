@@ -65,16 +65,57 @@
           exec xdg-open "${docs}/index.html"
         '';
       };
+
+      docsCoverage = pkgs.writeShellApplication {
+        name = "docs-coverage";
+
+        runtimeInputs = [ rustToolchain ];
+
+        text = ''
+          reportDir="target/${rustTarget}/doc"
+
+          rm -f "$reportDir"/*.txt
+
+          RUSTDOCFLAGS="-Z unstable-options --show-coverage -Awarnings" \
+            cargo doc \
+              --quiet \
+              --workspace \
+              --no-deps \
+              --document-private-items \
+              --target "${rustTarget}"
+
+          printf '\nDocumentation coverage\n\n'
+
+          for report in "$reportDir"/*.txt; do
+            if [[ ! -f "$report" ]]; then
+              continue
+            fi
+
+            name="$(basename "$report" .txt)"
+
+            printf '%s\n' "=== $name ==="
+            cat "$report"
+            printf '\n'
+          done
+        '';
+      };
     in
     {
       packages.docs = docs;
       checks.docs = docs;
 
-      # TODO: Add a way to generate documentation coverage stats
-      apps.docs = {
-        meta.description = "Generates the docs and opens in default browser";
-        type = "app";
-        program = "${openDocs}/bin/open-docs";
+      apps = {
+        docs = {
+          meta.description = "Generates the docs and opens in default browser";
+          type = "app";
+          program = "${openDocs}/bin/open-docs";
+        };
+
+        docs-coverage = {
+          meta.description = "Generates documentation coverage statistics";
+          type = "app";
+          program = "${docsCoverage}/bin/docs-coverage";
+        };
       };
     };
 }
