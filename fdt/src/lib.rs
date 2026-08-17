@@ -1,6 +1,6 @@
 //! A `no_std` parser for flattened devicetree (FDT).
 //!
-//! Implementation based on Devicetree Specification v0.4.
+//! Implementation based on [Devicetree Specification v0.4](https://www.devicetree.org/).
 //!
 //! This crate provides the components used to parse and validate FDT, commonly
 //! represented as a Device Tree Blob (DTB).

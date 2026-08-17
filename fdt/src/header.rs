@@ -11,7 +11,7 @@
 //! parsers. Bounds and overlap validation for the memory reservation block is
 //! deferred, as its size can only be determined while parsing it.
 //!
-//! Implementation based on Devicetree Specification v0.4.
+//! Implementation based on [Devicetree Specification v0.4](https://www.devicetree.org/).
 
 use crate::error::Error;
 
