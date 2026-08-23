@@ -18,7 +18,7 @@ mod firmware;
 mod logging;
 
 use core::panic::PanicInfo;
-use fdt::header::Header;
+use fdt::Fdt;
 
 /// Runs the kernel after architecture-specific initialization.
 ///
@@ -32,16 +32,9 @@ use fdt::header::Header;
 extern "C" fn main(hart_id: usize, dtb: usize) -> ! {
   logging::info!("kernel entered (hart={}, dtb={:#x})", hart_id, dtb);
 
-  // Cast the physical address provided by the firmware into a raw pointer
-  let dtb_ptr = dtb as *const [u8; 40];
+  let fdt = unsafe { Fdt::from_ptr(dtb as *const u8) };
 
-  // Safety: The firmware guarantees `dtb` points to a valid Flattened Devicetree in memory.
-  let header_bytes = unsafe { &*dtb_ptr };
-
-  match Header::parse(header_bytes) {
-    Ok(header) => logging::info!("FDT Header: {:#?}", header),
-    Err(e) => logging::info!("Failed to parse FDT header: {:?}", e),
-  }
+  logging::info!("FDT data structure:\n{:#?}", fdt);
 
   logging::debug!("kernel halting");
   arch::halt()

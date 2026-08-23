@@ -1,59 +1,44 @@
-//! Errors produced while parsing or validating an FDT.
+//! Error types produced while constructing and validating an FDT.
+//!
+//! [`Error`] is the top-level error returned by the parser. More specific error
+//! types are preserved as variants so callers can inspect the stage at which
+//! validation failed without losing the underlying diagnostic information.
 
-/// An error encountered while parsing or validating an FDT.
-// TODO: Eventually separate to nested error enums to better organize them example:
-// pub enum Error {
-//   Header(HeaderError),
-//   Structure(StructureError),
-//   Strings(StringError),
-//   Reservation(ReservationError),
-// }
-// INFO: pub is placed temporary to let kernel access these directly
+pub use crate::{fdt::BlobError, header::HeaderError, structure::StructureError};
+
+/// An error encountered while constructing or validating an FDT.
+///
+/// Each variant preserves the error produced by the component that detected the
+/// failure.
 #[derive(Debug, PartialEq)]
 pub enum Error {
-  /// An arithmetic operation overflowed while calculating an offset or size.
-  IntegerOverflow,
+  /// An error occurred while establishing the DTB byte range.
+  Blob(BlobError),
 
-  /// The FDT header contains an invalid magic value.
-  InvalidMagic {
-    /// Magic value found in the header.
-    found: u32,
-  },
+  /// An error occurred while decoding or validating the FDT header.
+  Header(HeaderError),
 
-  /// The total size declared by the FDT header is smaller than the header
-  /// itself.
-  TotalSizeTooSmall {
-    /// Total FDT size declared by the header.
-    total_size: u32,
-  },
+  /// An error occurred while validating the FDT structure block.
+  Structure(StructureError),
+}
 
-  /// The FDT version is not supported by this parser.
-  UnsupportedVersion {
-    /// FDT format version declared by the header.
-    version: u32,
+/// Converts a blob-level error into the top-level FDT error type.
+impl From<BlobError> for Error {
+  fn from(error: BlobError) -> Self {
+    Self::Blob(error)
+  }
+}
 
-    /// Earliest FDT version with which the blob declares compatibility.
-    last_compatible: u32,
-  },
+/// Converts a header error into the top-level FDT error type.
+impl From<HeaderError> for Error {
+  fn from(error: HeaderError) -> Self {
+    Self::Header(error)
+  }
+}
 
-  /// The memory reservation block is not aligned to an 8-byte boundary.
-  MisalignedReservationBlock {
-    /// Byte offset of the memory reservation block.
-    offset: u32,
-  },
-
-  /// The structure block is not aligned to a 4-byte boundary.
-  MisalignedStructureBlock {
-    /// Byte offset of the structure block.
-    offset: u32,
-  },
-
-  /// A block offset points to an invalid location within the FDT.
-  InvalidOffset,
-
-  /// A block extends beyond the bounds declared by the FDT header.
-  OutOfBounds,
-
-  /// Two FDT blocks overlap in memory.
-  BlocksOverlap,
+/// Converts a structure error into the top-level FDT error type.
+impl From<StructureError> for Error {
+  fn from(error: StructureError) -> Self {
+    Self::Structure(error)
+  }
 }

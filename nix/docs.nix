@@ -13,6 +13,7 @@
         rustc = rustToolchain;
       };
 
+      # TODO: Make the doc output that opens in browser file location deterministic
       docs = naersk'.buildPackage {
         pname = "rust-workspace-docs";
         version = "0.1.0";
@@ -38,6 +39,7 @@
           ++ [
             "--workspace"
             "--no-deps"
+            "--document-private-items"
           ];
 
         preDoc = ''

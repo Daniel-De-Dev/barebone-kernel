@@ -1,362 +1,681 @@
 //! Parsing and validation of the FDT header.
 //!
-//! Every FDT begins with a fixed-size header containing the information required
-//! to locate and interpret the memory reservation, structure, and strings blocks
-//! of the blob.
+//! An FDT begins with a fixed-size, big-endian header describing the total blob
+//! size, format version, boot CPU identifier, and the locations of its
+//! variable-sized blocks.
 //!
-//! This module validates the header before any of the variable-sized FDT blocks
-//! are parsed.
+//! This module decodes that header and validates every layout property that can
+//! be determined from the header alone.
 //!
-//! Validation of data contained within those blocks is left to their respective
-//! parsers. Bounds and overlap validation for the memory reservation block is
-//! deferred, as its size can only be determined while parsing it.
+//! The header does not encode the size of the memory reservation block.
+//! Only its starting offset can be bounded here; its complete extent and any
+//! overlap involving that extent cannot be determined from the header alone.
 //!
 //! Implementation based on [Devicetree Specification v0.4](https://www.devicetree.org/).
 
-use crate::error::Error;
+use core::ops::Range;
 
 /// Size of an FDT header in bytes.
-const HEADER_SIZE: u32 = 40;
+pub(super) const HEADER_SIZE: usize = 40;
 
 /// Magic value identifying an FDT.
 const FDT_MAGIC: u32 = 0xd00d_feed;
 
-/// Minimum FDT format version supported by this parser.
+/// FDT format version supported by this parser.
 const SUPPORTED_VERSION: u32 = 17;
 
-/// Parsed data from an FDT header.
+/// Required backwards-compatible version for [`SUPPORTED_VERSION`].
+const EXPECTED_LAST_COMPATIBLE_VERSION: u32 = 16;
+
+/// Byte offset of the `magic` field within the FDT header.
+const MAGIC: usize = 0;
+
+/// Byte offset of the `totalsize` field within the FDT header.
+const TOTAL_SIZE: usize = 4;
+
+/// Byte offset of the `off_dt_struct` field within the FDT header.
+const STRUCTURE_OFFSET: usize = 8;
+
+/// Byte offset of the `off_dt_strings` field within the FDT header.
+const STRINGS_OFFSET: usize = 12;
+
+/// Byte offset of the `off_mem_rsvmap` field within the FDT header.
+const RESERVATION_OFFSET: usize = 16;
+
+/// Byte offset of the `version` field within the FDT header.
+const VERSION: usize = 20;
+
+/// Byte offset of the `last_comp_version` field within the FDT header.
+const LAST_COMP_VERSION: usize = 24;
+
+/// Byte offset of the `boot_cpuid_phys` field within the FDT header.
+const BOOT_CPUID_PHYS: usize = 28;
+
+/// Byte offset of the `size_dt_strings` field within the FDT header.
+const STRINGS_SIZE: usize = 32;
+
+/// Byte offset of the `size_dt_struct` field within the FDT header.
+const STRUCTURE_SIZE: usize = 36;
+
+/// Identifies a variable-sized block referenced by the FDT header.
+#[derive(Debug, PartialEq)]
+pub enum BlockKind {
+  /// Memory reservation block.
+  MemoryReservation,
+
+  /// Structure block.
+  Structure,
+
+  /// Strings block.
+  Strings,
+}
+
+/// An error encountered while decoding or validating an FDT header.
+#[derive(Debug, PartialEq)]
+pub enum HeaderError {
+  /// The header does not contain the FDT magic value.
+  InvalidMagic {
+    /// Magic value read from the header.
+    found: u32,
+  },
+
+  /// The declared blob size is too small to contain the header.
+  TotalSizeTooSmall {
+    /// Declared total blob size, in bytes.
+    total_size: usize,
+
+    /// Minimum permitted blob size, in bytes.
+    minimum: usize,
+  },
+
+  /// The header declares an unsupported FDT version pair.
+  UnsupportedVersion {
+    /// FDT format version.
+    version: u32,
+
+    /// Lowest format version with which the blob declares compatibility.
+    last_compatible: u32,
+  },
+
+  /// A block offset does not satisfy its required alignment.
+  MisalignedBlock {
+    /// Block containing the invalid offset.
+    block: BlockKind,
+
+    /// Byte offset from the beginning of the FDT.
+    offset: usize,
+
+    /// Required byte alignment.
+    required_alignment: usize,
+  },
+
+  /// A block begins within the fixed-size FDT header.
+  BlockOffsetInsideHeader {
+    /// Block containing the invalid offset.
+    block: BlockKind,
+
+    /// Byte offset from the beginning of the FDT.
+    offset: usize,
+
+    /// Size of the fixed FDT header, in bytes.
+    header_size: usize,
+  },
+
+  /// A block start lies beyond the declared end of the FDT blob.
+  BlockOffsetOutOfBounds {
+    /// Block containing the invalid offset.
+    block: BlockKind,
+
+    /// Byte offset from the beginning of the FDT.
+    offset: usize,
+
+    /// Declared total blob size, in bytes.
+    total_size: usize,
+  },
+
+  /// A known-size block does not fit within the declared FDT blob.
+  BlockOutOfBounds {
+    /// Block whose range is invalid.
+    block: BlockKind,
+
+    /// Byte offset at which the block begins.
+    offset: usize,
+
+    /// Declared block size, in bytes.
+    size: usize,
+
+    /// Declared total blob size, in bytes.
+    total_size: usize,
+  },
+
+  /// Two known block ranges overlap.
+  BlocksOverlap {
+    /// First overlapping block.
+    first: BlockKind,
+
+    /// Second overlapping block.
+    second: BlockKind,
+  },
+}
+
+/// Validated information decoded from an FDT header.
 ///
-/// Construction is performed through [`Header::parse`], which validates the
-/// header before returning a `Header`.
+/// Instances can only be constructed through [`Header::new`]. The stored
+/// structure and strings ranges have been checked to lie within
+/// [`Header::total_size`] and not overlap each other.
 #[derive(Debug, Clone)]
-// INFO: pub is placed temporary to let kernel access these directly
-pub struct Header {
-  /// Total size of the FDT blob, in bytes.
-  total_size: u32,
+pub(super) struct Header {
+  /// Declared total size of the FDT blob, in bytes.
+  total_size: usize,
 
-  /// Byte offset from the beginning of the FDT header to the structure block.
-  off_dt_struct: u32,
+  /// Validated byte range occupied by the structure block.
+  structure_range: Range<usize>,
 
-  /// Byte offset from the beginning of the FDT header to the strings block.
-  off_dt_strings: u32,
+  /// Validated byte range occupied by the strings block.
+  strings_range: Range<usize>,
 
-  /// Byte offset from the beginning of the FDT header to the memory reservation
-  /// block.
-  off_mem_rsvmap: u32,
+  /// Byte offset at which the memory reservation block begins.
+  ///
+  /// The offset is aligned, does not point inside the header, and does not lie
+  /// beyond `total_size`. The complete block extent is not known from the
+  /// header.
+  off_mem_rsvmap: usize,
 
-  /// Version of the FDT data structure.
+  /// FDT format version decoded from the header.
   version: u32,
 
-  /// Lowest FDT data structure version with which this blob is backwards
-  /// compatible.
+  /// Lowest FDT format version with which the blob declares compatibility.
   last_comp_version: u32,
 
-  /// Physical ID of the CPU on which the system booted.
+  /// Physical identifier of the CPU on which the system booted.
   boot_cpuid_phys: u32,
+}
 
-  /// Size of the strings block, in bytes.
-  size_dt_strings: u32,
+/// Reads a big-endian `u32` from a field within an FDT header.
+///
+/// `offset` is expected to identify the first byte of a four-byte field fully
+/// contained within `bytes`.
+fn read_be_u32(bytes: &[u8; HEADER_SIZE], offset: usize) -> u32 {
+  u32::from_be_bytes([
+    bytes[offset],
+    bytes[offset + 1],
+    bytes[offset + 2],
+    bytes[offset + 3],
+  ])
+}
 
-  /// Size of the structure block, in bytes.
-  size_dt_struct: u32,
+/// Constructs a validated range for a known-size FDT block.
+///
+/// The returned range is guaranteed to end at or before `total_size`. The
+/// bounds check is performed before calculating `offset + size`, so the range
+/// end cannot overflow.
+///
+/// # Errors
+///
+/// Returns [`HeaderError::BlockOutOfBounds`] if `offset` lies beyond
+/// `total_size` or if `size` exceeds the number of bytes remaining from
+/// `offset`.
+fn block_range(
+  block: BlockKind,
+  offset: usize,
+  size: usize,
+  total_size: usize,
+) -> Result<Range<usize>, HeaderError> {
+  if offset > total_size || size > total_size - offset {
+    return Err(HeaderError::BlockOutOfBounds {
+      block,
+      offset,
+      size,
+      total_size,
+    });
+  }
+
+  Ok(offset..offset + size)
 }
 
 impl Header {
-  /// Parses and validates an FDT header.
+  /// Decodes and validates a fixed-size FDT header.
   ///
-  /// `bytes` must contain exactly the 40-byte FDT header. Each field is decoded
-  /// from its big-endian representation and the resulting layout is checked
-  /// before a [`Header`] is returned.
+  /// The header fields are interpreted as big-endian values. Validation
+  /// establishes all layout properties that can be determined without
+  /// inspecting the contents of the variable-sized blocks.
   ///
-  /// Validation currently ensures that:
+  /// On success:
   ///
-  /// - The FDT magic value is valid.
-  /// - The declared total size can contain the header.
-  /// - The FDT version and backwards-compatibility version are supported.
-  /// - The memory reservation block is 8-byte aligned.
-  /// - The structure block is 4-byte aligned.
-  /// - Block offsets do not point inside the header.
-  /// - Computing known block boundaries does not overflow.
-  /// - The structure and strings blocks fit within the declared total size.
-  /// - And the structure and strings blocks do not overlap.
-  ///
-  /// The size of the memory reservation block is not encoded directly in the
-  /// header. Its complete bounds therefore cannot be validated here and must be
-  /// checked when that block is parsed.
+  /// - `total_size` is at least [`HEADER_SIZE`].
+  /// - The FDT version pair is supported.
+  /// - The memory reservation offset is 8-byte aligned.
+  /// - The structure offset is 4-byte aligned.
+  /// - All block offsets begin at or after the end of the header.
+  /// - The memory reservation offset does not exceed `total_size`.
+  /// - The structure and strings ranges lie entirely within `total_size`.
+  /// - The structure and strings ranges do not overlap.
   ///
   /// # Errors
   ///
   /// Returns:
   ///
-  /// - [`Error::InvalidMagic`] if the FDT magic value is incorrect.
-  /// - [`Error::TotalSizeTooSmall`] if the FDT is smaller than the
-  ///   header itself.
-  /// - [`Error::UnsupportedVersion`] if the FDT version or declared
-  ///   backwards-compatible version is unsupported.
-  /// - [`Error::MisalignedReservationBlock`] if the memory reservation block is
-  ///   not 8-byte aligned.
-  /// - [`Error::MisalignedStructureBlock`] if the structure block is not
-  ///   4-byte aligned.
-  /// - [`Error::IntegerOverflow`] if calculating the end of a block overflows.
-  /// - [`Error::InvalidOffset`] if a block begins inside the header.
-  /// - [`Error::OutOfBounds`] if a known block extends beyond the declared FDT
-  ///   size.
-  /// - [`Error::BlocksOverlap`] if the structure and strings blocks overlap.
-  // INFO: pub is placed temporary to let kernel access these directly
-  pub fn parse(bytes: &[u8; 40]) -> Result<Self, Error> {
-    let magic = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+  /// - [`HeaderError::InvalidMagic`] if the magic value is incorrect.
+  /// - [`HeaderError::TotalSizeTooSmall`] if the declared blob cannot contain
+  ///   the fixed-size header.
+  /// - [`HeaderError::UnsupportedVersion`] if the version pair is unsupported.
+  /// - [`HeaderError::MisalignedBlock`] if a block offset does not satisfy its
+  ///   required alignment.
+  /// - [`HeaderError::BlockOffsetInsideHeader`] if a block begins within the
+  ///   fixed-size header.
+  /// - [`HeaderError::BlockOffsetOutOfBounds`] if the memory reservation offset
+  ///   lies beyond the declared blob.
+  /// - [`HeaderError::BlockOutOfBounds`] if the structure or strings block does
+  ///   not fit within the declared blob.
+  /// - [`HeaderError::BlocksOverlap`] if the structure and strings ranges
+  ///   overlap.
+  pub(super) fn new(bytes: &[u8; HEADER_SIZE]) -> Result<Self, HeaderError> {
+    let magic = read_be_u32(bytes, MAGIC);
 
     if magic != FDT_MAGIC {
-      return Err(Error::InvalidMagic { found: magic });
+      return Err(HeaderError::InvalidMagic { found: magic });
     }
 
-    let total_size = u32::from_be_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
-    let off_dt_struct = u32::from_be_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
-    let off_dt_strings = u32::from_be_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]);
-    let off_mem_rsvmap = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
-    let version = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
-    let last_comp_version = u32::from_be_bytes([bytes[24], bytes[25], bytes[26], bytes[27]]);
-    let boot_cpuid_phys = u32::from_be_bytes([bytes[28], bytes[29], bytes[30], bytes[31]]);
-    let size_dt_strings = u32::from_be_bytes([bytes[32], bytes[33], bytes[34], bytes[35]]);
-    let size_dt_struct = u32::from_be_bytes([bytes[36], bytes[37], bytes[38], bytes[39]]);
+    let total_size = read_be_u32(bytes, TOTAL_SIZE) as usize;
+    let off_dt_struct = read_be_u32(bytes, STRUCTURE_OFFSET) as usize;
+    let off_dt_strings = read_be_u32(bytes, STRINGS_OFFSET) as usize;
+    let off_mem_rsvmap = read_be_u32(bytes, RESERVATION_OFFSET) as usize;
+
+    let version = read_be_u32(bytes, VERSION);
+    let last_comp_version = read_be_u32(bytes, LAST_COMP_VERSION);
+    let boot_cpuid_phys = read_be_u32(bytes, BOOT_CPUID_PHYS);
+
+    let size_dt_strings = read_be_u32(bytes, STRINGS_SIZE) as usize;
+    let size_dt_struct = read_be_u32(bytes, STRUCTURE_SIZE) as usize;
 
     if total_size < HEADER_SIZE {
-      return Err(Error::TotalSizeTooSmall { total_size });
+      return Err(HeaderError::TotalSizeTooSmall {
+        total_size,
+        minimum: HEADER_SIZE,
+      });
     }
 
-    const EXPECTED_LAST_COMPATIBLE_VERSION: u32 = 16;
-
-    if version < SUPPORTED_VERSION || last_comp_version != EXPECTED_LAST_COMPATIBLE_VERSION {
-      return Err(Error::UnsupportedVersion {
+    if version != SUPPORTED_VERSION || last_comp_version != EXPECTED_LAST_COMPATIBLE_VERSION {
+      return Err(HeaderError::UnsupportedVersion {
         version,
         last_compatible: last_comp_version,
       });
     }
 
-    if off_mem_rsvmap % 8 != 0 {
-      return Err(Error::MisalignedReservationBlock {
+    if !off_mem_rsvmap.is_multiple_of(8) {
+      return Err(HeaderError::MisalignedBlock {
+        block: BlockKind::MemoryReservation,
         offset: off_mem_rsvmap,
+        required_alignment: 8,
       });
     }
 
-    if off_dt_struct % 4 != 0 {
-      return Err(Error::MisalignedStructureBlock {
+    if !off_dt_struct.is_multiple_of(4) {
+      return Err(HeaderError::MisalignedBlock {
+        block: BlockKind::Structure,
         offset: off_dt_struct,
+        required_alignment: 4,
       });
     }
 
-    let struct_end = off_dt_struct
-      .checked_add(size_dt_struct)
-      .ok_or(Error::IntegerOverflow)?;
-
-    let strings_end = off_dt_strings
-      .checked_add(size_dt_strings)
-      .ok_or(Error::IntegerOverflow)?;
-
-    // Validate that blocks start after header
-    if off_mem_rsvmap < HEADER_SIZE || off_dt_struct < HEADER_SIZE || off_dt_strings < HEADER_SIZE {
-      return Err(Error::InvalidOffset);
+    for (block, offset) in [
+      (BlockKind::MemoryReservation, off_mem_rsvmap),
+      (BlockKind::Structure, off_dt_struct),
+      (BlockKind::Strings, off_dt_strings),
+    ] {
+      if offset < HEADER_SIZE {
+        return Err(HeaderError::BlockOffsetInsideHeader {
+          block,
+          offset,
+          header_size: HEADER_SIZE,
+        });
+      }
     }
 
-    // Validate that known block sizes fit within declared total size
-    // NOTE: memory block's size is unknown at this time and this needs to be validated later
-    if struct_end > total_size || strings_end > total_size {
-      return Err(Error::OutOfBounds);
+    // The header provides the reservation block's start, but not its size.
+    if off_mem_rsvmap > total_size {
+      return Err(HeaderError::BlockOffsetOutOfBounds {
+        block: BlockKind::MemoryReservation,
+        offset: off_mem_rsvmap,
+        total_size,
+      });
     }
 
-    // Validate that known blocks don't overlap
-    // NOTE: memory block's size is unknown at this time and this needs to be validated later
-    if (off_dt_struct < strings_end) && (struct_end > off_dt_strings) {
-      return Err(Error::BlocksOverlap);
+    let structure_range = block_range(
+      BlockKind::Structure,
+      off_dt_struct,
+      size_dt_struct,
+      total_size,
+    )?;
+
+    let strings_range = block_range(
+      BlockKind::Strings,
+      off_dt_strings,
+      size_dt_strings,
+      total_size,
+    )?;
+
+    if structure_range.start < strings_range.end && strings_range.start < structure_range.end {
+      return Err(HeaderError::BlocksOverlap {
+        first: BlockKind::Structure,
+        second: BlockKind::Strings,
+      });
     }
 
     Ok(Self {
       total_size,
-      off_dt_struct,
-      off_dt_strings,
+      structure_range,
+      strings_range,
       off_mem_rsvmap,
       version,
       last_comp_version,
       boot_cpuid_phys,
-      size_dt_strings,
-      size_dt_struct,
     })
+  }
+
+  /// Returns the declared total size of the FDT blob, in bytes.
+  pub(super) const fn total_size(&self) -> usize {
+    self.total_size
+  }
+
+  /// Returns the validated byte range occupied by the structure block.
+  ///
+  /// The returned range lies entirely within [`Header::total_size`].
+  pub(super) const fn structure_range(&self) -> Range<usize> {
+    self.structure_range.start..self.structure_range.end
+  }
+
+  /// Returns the validated byte range occupied by the strings block.
+  ///
+  /// The returned range lies entirely within [`Header::total_size`].
+  pub(super) const fn strings_range(&self) -> Range<usize> {
+    self.strings_range.start..self.strings_range.end
   }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::error::Error;
 
   // Helper to generate a known-good FDT header.
-  fn valid_header_bytes() -> [u8; 40] {
-    let mut bytes = [0u8; 40];
+  fn valid_header_bytes() -> [u8; HEADER_SIZE] {
+    let mut bytes = [0; HEADER_SIZE];
 
-    bytes[0..4].copy_from_slice(&FDT_MAGIC.to_be_bytes());
-    bytes[4..8].copy_from_slice(&1024u32.to_be_bytes()); // total_size
-    bytes[8..12].copy_from_slice(&64u32.to_be_bytes()); // off_dt_struct
-    bytes[12..16].copy_from_slice(&512u32.to_be_bytes()); // off_dt_strings
-    bytes[16..20].copy_from_slice(&40u32.to_be_bytes()); // off_mem_rsvmap
-    bytes[20..24].copy_from_slice(&17u32.to_be_bytes()); // version
-    bytes[24..28].copy_from_slice(&16u32.to_be_bytes()); // last_comp_version
-    bytes[28..32].copy_from_slice(&0u32.to_be_bytes()); // boot_cpuid_phys
-    bytes[32..36].copy_from_slice(&100u32.to_be_bytes()); // size_dt_strings
-    bytes[36..40].copy_from_slice(&200u32.to_be_bytes()); // size_dt_struct
+    set_u32(&mut bytes, MAGIC, FDT_MAGIC);
+    set_u32(&mut bytes, TOTAL_SIZE, 1024);
+    set_u32(&mut bytes, STRUCTURE_OFFSET, 64);
+    set_u32(&mut bytes, STRINGS_OFFSET, 512);
+    set_u32(&mut bytes, RESERVATION_OFFSET, 40);
+    set_u32(&mut bytes, VERSION, 17);
+    set_u32(&mut bytes, LAST_COMP_VERSION, 16);
+    set_u32(&mut bytes, BOOT_CPUID_PHYS, 0x1234_5678);
+    set_u32(&mut bytes, STRINGS_SIZE, 100);
+    set_u32(&mut bytes, STRUCTURE_SIZE, 200);
 
     bytes
   }
 
-  // Helper to write a specific u32 into a byte array at a given offset
-  fn mutate_field(bytes: &mut [u8; 40], offset: usize, value: u32) {
+  // Helper to write a specific u32 into a byte array at a given offset.
+  fn set_u32(bytes: &mut [u8; HEADER_SIZE], offset: usize, value: u32) {
     bytes[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
   }
 
   #[test]
-  fn test_valid_header() {
+  fn valid_header_is_parsed() {
     let bytes = valid_header_bytes();
-    let header = Header::parse(&bytes).expect("Failed to parse valid header");
+    let header = Header::new(&bytes).expect("valid header should parse");
 
+    assert_eq!(header.total_size, 1024);
+    assert_eq!(header.structure_range, 64..264);
+    assert_eq!(header.strings_range, 512..612);
+    assert_eq!(header.off_mem_rsvmap, 40);
     assert_eq!(header.version, 17);
     assert_eq!(header.last_comp_version, 16);
-    assert_eq!(header.total_size, 1024);
+    assert_eq!(header.boot_cpuid_phys, 0x1234_5678);
+
+    assert_eq!(header.total_size(), 1024);
+    assert_eq!(header.structure_range(), 64..264);
+    assert_eq!(header.strings_range(), 512..612);
   }
 
   #[test]
-  fn test_invalid_magic() {
+  fn invalid_magic_is_rejected() {
     let mut bytes = valid_header_bytes();
 
-    // Change Magic
-    mutate_field(&mut bytes, 0, 0xBAD_CAFE);
+    set_u32(&mut bytes, MAGIC, 0xBAD_CAFE);
 
     assert_eq!(
-      Header::parse(&bytes).unwrap_err(),
-      Error::InvalidMagic { found: 0xBAD_CAFE }
+      Header::new(&bytes).unwrap_err(),
+      HeaderError::InvalidMagic { found: 0xBAD_CAFE }
     );
   }
 
   #[test]
-  fn test_small_size() {
+  fn total_size_smaller_than_header_is_rejected() {
     let mut bytes = valid_header_bytes();
 
-    // Change size to less than 40
-    mutate_field(&mut bytes, 4, 30);
+    set_u32(&mut bytes, TOTAL_SIZE, (HEADER_SIZE - 1) as u32);
 
     assert_eq!(
-      Header::parse(&bytes).unwrap_err(),
-      Error::TotalSizeTooSmall { total_size: 30 }
+      Header::new(&bytes).unwrap_err(),
+      HeaderError::TotalSizeTooSmall {
+        total_size: HEADER_SIZE - 1,
+        minimum: HEADER_SIZE,
+      }
     );
   }
 
   #[test]
-  fn test_unsupported_version() {
+  fn version_below_supported_version_is_rejected() {
     let mut bytes = valid_header_bytes();
 
-    // Set version to lower than 16
-    mutate_field(&mut bytes, 20, 15);
+    set_u32(&mut bytes, VERSION, 15);
 
     assert_eq!(
-      Header::parse(&bytes).unwrap_err(),
-      Error::UnsupportedVersion {
+      Header::new(&bytes).unwrap_err(),
+      HeaderError::UnsupportedVersion {
         version: 15,
-        last_compatible: 16
+        last_compatible: 16,
       }
     );
   }
 
   #[test]
-  fn test_invalid_last_comp_version() {
+  fn unexpected_last_compatible_version_is_rejected() {
     let mut bytes = valid_header_bytes();
 
-    // Set last_comp_version to less than 16
-    mutate_field(&mut bytes, 24, 15);
+    set_u32(&mut bytes, LAST_COMP_VERSION, 15);
 
     assert_eq!(
-      Header::parse(&bytes).unwrap_err(),
-      Error::UnsupportedVersion {
+      Header::new(&bytes).unwrap_err(),
+      HeaderError::UnsupportedVersion {
         version: 17,
-        last_compatible: 15
+        last_compatible: 15,
       }
     );
   }
 
   #[test]
-  fn test_misaligned_rsvmap() {
+  fn misaligned_reservation_offset_is_rejected() {
     let mut bytes = valid_header_bytes();
 
-    // Set off_mem_rsvmap to a non 8 byte aligned address
-    mutate_field(&mut bytes, 16, 41);
+    set_u32(&mut bytes, RESERVATION_OFFSET, 41);
 
     assert_eq!(
-      Header::parse(&bytes).unwrap_err(),
-      Error::MisalignedReservationBlock { offset: 41 }
+      Header::new(&bytes).unwrap_err(),
+      HeaderError::MisalignedBlock {
+        block: BlockKind::MemoryReservation,
+        offset: 41,
+        required_alignment: 8,
+      }
     );
   }
 
   #[test]
-  fn test_misaligned_struct_block() {
+  fn misaligned_structure_offset_is_rejected() {
     let mut bytes = valid_header_bytes();
 
-    // Set off_dt_struct to a non 4 byte aligned address
-    mutate_field(&mut bytes, 8, 41);
+    set_u32(&mut bytes, STRUCTURE_OFFSET, 42);
 
     assert_eq!(
-      Header::parse(&bytes).unwrap_err(),
-      Error::MisalignedStructureBlock { offset: 41 }
+      Header::new(&bytes).unwrap_err(),
+      HeaderError::MisalignedBlock {
+        block: BlockKind::Structure,
+        offset: 42,
+        required_alignment: 4,
+      }
     );
   }
 
   #[test]
-  fn test_integer_overflow_struct_end() {
+  fn reservation_offset_inside_header_is_rejected() {
     let mut bytes = valid_header_bytes();
 
-    // (u32::MAX - 3) + 10 = overflow
-    mutate_field(&mut bytes, 8, u32::MAX - 3);
-    mutate_field(&mut bytes, 36, 10);
+    set_u32(&mut bytes, RESERVATION_OFFSET, 24);
 
-    assert_eq!(Header::parse(&bytes).unwrap_err(), Error::IntegerOverflow);
+    assert_eq!(
+      Header::new(&bytes).unwrap_err(),
+      HeaderError::BlockOffsetInsideHeader {
+        block: BlockKind::MemoryReservation,
+        offset: 24,
+        header_size: 40,
+      }
+    );
   }
 
   #[test]
-  fn test_integer_overflow_strings_end() {
+  fn structure_offset_inside_header_is_rejected() {
     let mut bytes = valid_header_bytes();
 
-    // (u32::MAX - 10) + 20 = overflow
-    mutate_field(&mut bytes, 12, u32::MAX - 10);
-    mutate_field(&mut bytes, 32, 20);
+    set_u32(&mut bytes, STRUCTURE_OFFSET, 36);
 
-    assert_eq!(Header::parse(&bytes).unwrap_err(), Error::IntegerOverflow);
+    assert_eq!(
+      Header::new(&bytes).unwrap_err(),
+      HeaderError::BlockOffsetInsideHeader {
+        block: BlockKind::Structure,
+        offset: 36,
+        header_size: 40,
+      }
+    );
   }
 
   #[test]
-  fn test_block_ends_within_size() {
+  fn strings_offset_inside_header_is_rejected() {
     let mut bytes = valid_header_bytes();
 
-    mutate_field(&mut bytes, 36, 1000);
-    mutate_field(&mut bytes, 32, 1000);
+    set_u32(&mut bytes, STRINGS_OFFSET, 24);
 
-    assert_eq!(Header::parse(&bytes).unwrap_err(), Error::OutOfBounds);
+    assert_eq!(
+      Header::new(&bytes).unwrap_err(),
+      HeaderError::BlockOffsetInsideHeader {
+        block: BlockKind::Strings,
+        offset: 24,
+        header_size: 40,
+      }
+    );
   }
 
   #[test]
-  fn test_invalid_block_overlap() {
+  fn reservation_offset_beyond_blob_is_rejected() {
     let mut bytes = valid_header_bytes();
 
-    // Force Structure block to overlap Strings block
-    mutate_field(&mut bytes, 8, 100); // off_dt_struct
-    mutate_field(&mut bytes, 36, 100); // size_dt_struct (Ends at 200)
-    mutate_field(&mut bytes, 12, 150); // off_dt_strings (Starts before Structure ends)
+    set_u32(&mut bytes, RESERVATION_OFFSET, 1024 + 8);
 
-    assert_eq!(Header::parse(&bytes).unwrap_err(), Error::BlocksOverlap);
+    assert_eq!(
+      Header::new(&bytes).unwrap_err(),
+      HeaderError::BlockOffsetOutOfBounds {
+        block: BlockKind::MemoryReservation,
+        offset: 1032,
+        total_size: 1024,
+      }
+    );
   }
 
   #[test]
-  fn test_offsets_before_header_ends() {
+  fn strings_block_out_of_bounds_is_rejected() {
     let mut bytes = valid_header_bytes();
 
-    // set off_mem_rsvmap to starts inside header
-    mutate_field(&mut bytes, 16, 24);
+    set_u32(&mut bytes, STRINGS_SIZE, 1000);
 
-    assert_eq!(Header::parse(&bytes).unwrap_err(), Error::InvalidOffset);
+    assert_eq!(
+      Header::new(&bytes).unwrap_err(),
+      HeaderError::BlockOutOfBounds {
+        block: BlockKind::Strings,
+        offset: 512,
+        size: 1000,
+        total_size: 1024,
+      }
+    );
+  }
+
+  #[test]
+  fn structure_block_out_of_bounds_is_rejected() {
+    let mut bytes = valid_header_bytes();
+
+    set_u32(&mut bytes, STRUCTURE_SIZE, 1000);
+
+    assert_eq!(
+      Header::new(&bytes).unwrap_err(),
+      HeaderError::BlockOutOfBounds {
+        block: BlockKind::Structure,
+        offset: 64,
+        size: 1000,
+        total_size: 1024,
+      }
+    );
+  }
+
+  #[test]
+  fn overlapping_structure_and_strings_blocks_are_rejected() {
+    let mut bytes = valid_header_bytes();
+
+    set_u32(&mut bytes, STRUCTURE_OFFSET, 100);
+    set_u32(&mut bytes, STRUCTURE_SIZE, 100);
+    set_u32(&mut bytes, STRINGS_OFFSET, 150);
+
+    assert_eq!(
+      Header::new(&bytes).unwrap_err(),
+      HeaderError::BlocksOverlap {
+        first: BlockKind::Structure,
+        second: BlockKind::Strings,
+      }
+    );
+  }
+
+  #[test]
+  fn overflow_prone_structure_range_is_rejected() {
+    let mut bytes = valid_header_bytes();
+
+    set_u32(&mut bytes, TOTAL_SIZE, u32::MAX);
+    set_u32(&mut bytes, STRUCTURE_OFFSET, u32::MAX - 3);
+    set_u32(&mut bytes, STRUCTURE_SIZE, 8);
+
+    assert_eq!(
+      Header::new(&bytes).unwrap_err(),
+      HeaderError::BlockOutOfBounds {
+        block: BlockKind::Structure,
+        offset: (u32::MAX - 3) as usize,
+        size: 8,
+        total_size: u32::MAX as usize,
+      }
+    );
+  }
+
+  #[test]
+  fn structure_offset_beyond_blob_is_rejected() {
+    let mut bytes = valid_header_bytes();
+
+    set_u32(&mut bytes, STRUCTURE_OFFSET, 1028);
+    set_u32(&mut bytes, STRUCTURE_SIZE, 0);
+
+    assert_eq!(
+      Header::new(&bytes).unwrap_err(),
+      HeaderError::BlockOutOfBounds {
+        block: BlockKind::Structure,
+        offset: 1028,
+        size: 0,
+        total_size: 1024,
+      }
+    );
   }
 }
