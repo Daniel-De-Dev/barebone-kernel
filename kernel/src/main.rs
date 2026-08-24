@@ -12,11 +12,13 @@
 #![no_std]
 #![no_main]
 
+mod address;
 mod arch;
 mod console;
 mod firmware;
 mod logging;
 
+use address::PhysAddr;
 use core::panic::PanicInfo;
 use fdt::Fdt;
 
@@ -27,12 +29,16 @@ use fdt::Fdt;
 /// previous firmware stage.
 ///
 /// This function does not return.
-// TODO: Consider representing the DTB address with a physical-address type.
 #[unsafe(no_mangle)]
 extern "C" fn main(hart_id: usize, dtb: usize) -> ! {
-  logging::info!("kernel entered (hart={}, dtb={:#x})", hart_id, dtb);
+  let dtb_phys = PhysAddr::new(dtb);
 
-  let fdt = unsafe { Fdt::from_ptr(dtb as *const u8) };
+  logging::info!("kernel entered (hart={}, dtb={:#x})", hart_id, dtb_phys);
+
+  // SAFETY:
+  // Address translation has not been enabled, so the physical DTB address
+  // supplied by the firmware is directly addressable by the kernel.
+  let fdt = unsafe { Fdt::from_ptr(dtb_phys.as_usize() as *const u8) };
 
   logging::info!("FDT data structure:\n{:#?}", fdt);
 
