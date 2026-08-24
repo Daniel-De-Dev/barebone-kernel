@@ -1,3 +1,4 @@
+BootROM
 D1
 DTB
 DTBs
@@ -14,6 +15,8 @@ OpenSBI
 Qemu
 SBI
 SPL
+StarFive
+VisionFive
 devicetree
 representable
 u32

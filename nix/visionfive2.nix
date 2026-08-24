@@ -11,13 +11,62 @@
       riscvPkgs = pkgs.pkgsCross.riscv64;
       crossCompile = riscvPkgs.stdenv.cc.targetPrefix;
 
+      board = boards.visionfive2;
+
       opensbiLib = import ./opensbi.nix { inherit inputs lib pkgs; };
 
-      visionFive2Dtb = "jh7110-starfive-visionfive-2-v1.3b.dtb";
+      visionFive2DtbName = "jh7110-starfive-visionfive-2-v1.3b.dtb";
 
       opensbiVisionFive2 = opensbiLib.mkDynamic {
         name = "visionfive2";
         textStart = boards.visionfive2.opensbiAddress;
+      };
+
+      /*
+        Build the hardware DTB passed to OpenSBI and the kernel.
+
+        This intentionally builds directly from U-Boot's vendored upstream
+        Devicetree sources under `dts/upstream/`, rather than using the DTB
+        produced by the normal U-Boot board build.
+
+        The normal U-Boot build changes the board Devicetree with
+        U-Boot-specific data such as /binman. That data describes U-Boot's
+        own image construction and is not part of the board's hardware
+        description.
+
+        Source:
+        `dts/upstream/src/riscv/starfive/jh7110-starfive-visionfive-2-v1.3b.dts`
+      */
+      visionFive2Dtb = pkgs.stdenv.mkDerivation {
+        pname = "visionfive2-dtb";
+        version = inputs.src-uboot.shortRev or "dirty";
+        src = inputs.src-uboot;
+
+        nativeBuildInputs = [ pkgs.dtc ];
+
+        dontConfigure = true;
+
+        buildPhase = ''
+           runHook preBuild
+
+          make -C dts/upstream \
+           -j"$NIX_BUILD_CORES" \
+           ARCH=riscv \
+           CPP=${lib.getExe' pkgs.stdenv.cc "cpp"} \
+           src/riscv/starfive/${visionFive2DtbName}
+
+           runHook postBuild
+        '';
+
+        installPhase = ''
+          runHook preInstall
+
+          install -Dm0644 \
+            dts/upstream/src/riscv/starfive/${visionFive2DtbName} \
+            "$out/dtb/${visionFive2DtbName}"
+
+          runHook postInstall
+        '';
       };
 
       /*
@@ -30,8 +79,9 @@
         `starfive_visionfive2_defconfig` produces the StarFive-wrapped
         `u-boot-spl.bin.normal.out` image accepted by the board's BootROM.
 
-        The v1.3B DTB is also installed for inclusion in the project's custom
-        FIT image.
+        The DTB generated as part of the U-Boot build is intentionally not
+        exported for use by the kernel. It contains U-Boot-specific control
+        data which makes validation fail.
       */
       visionFive2Spl = riscvPkgs.stdenv.mkDerivation {
         pname = "visionfive2-spl";
@@ -73,6 +123,10 @@
             --set-val CONFIG_BAUDRATE \
             ${toString boards.visionfive2.baudrate}
 
+          ./scripts/config \
+            --set-val CONFIG_SPL_OPENSBI_SCRATCH_OPTIONS \
+            0x0
+
           runHook postConfigure
         '';
 
@@ -83,15 +137,6 @@
             spl/u-boot-spl.bin.normal.out \
             "$out/u-boot-spl.bin.normal.out"
 
-          src="$(find . -type f -name "${visionFive2Dtb}" -print -quit)"
-
-          if [ -z "$src" ]; then
-            echo "Could not find built DTB: ${visionFive2Dtb}" >&2
-            exit 1
-          fi
-
-          install -Dm0644 "$src" "$out/dtb/${visionFive2Dtb}"
-
           runHook postInstall
         '';
       };
@@ -99,8 +144,7 @@
       /*
         Build the FIT consumed by the VisionFive 2 U-Boot SPL.
 
-        The image contains OpenSBI FW_DYNAMIC, the kernel, and
-        the board DTB.
+        The image contains OpenSBI `FW_DYNAMIC`, the kernel, and the board DTB.
       */
       mkVisionFive2Fit =
         { name, kernel }:
@@ -121,21 +165,13 @@
             cp ${./templates/vf2-fit.its.in} fit.its
 
             substituteInPlace fit.its \
-              --replace-fail \
-                '@opensbiAddress@' \
-                '${boards.toHex boards.visionfive2.opensbiAddress}' \
-              --replace-fail \
-                '@kernelAddress@' \
-                '${boards.toHex kernel.loadAddress}' \
-              --replace-fail \
-                '@fdtAddress@' \
-                '${boards.toHex boards.visionfive2.fdtAddress}'
+              --replace-fail '@opensbiAddress@' '${boards.toHex board.opensbiAddress}' \
+              --replace-fail '@kernelAddress@' '${boards.toHex kernel.loadAddress}' \
+              --replace-fail '@fdtAddress@' '${boards.toHex board.fdtAddress}'
 
             ln -s ${opensbiVisionFive2}/fw_dynamic.bin fw_dynamic.bin
             ln -s ${kernel}/bin/kernel.bin kernel.bin
-            ln -s \
-              ${visionFive2Spl}/dtb/${visionFive2Dtb} \
-              vf2-v1.3b.dtb
+            ln -s ${visionFive2Dtb}/dtb/${visionFive2DtbName} vf2-v1.3b.dtb
 
             mkimage -f fit.its fit.itb
 
@@ -153,7 +189,7 @@
         The BootROM receives U-Boot SPL. SPL then performs the board's early
         hardware and DRAM initialization, then receives the custom FIT image.
 
-        The FIT contains OpenSBI FW_DYNAMIC, the kernel, and the board DTB.
+        The FIT contains OpenSBI `FW_DYNAMIC`, the kernel, and the board DTB.
 
         Sources:
         https://github.com/u-boot/u-boot/blob/baa64b2f892890f00a377eac4a3e685472bb56b5/common/spl/spl_opensbi.c
@@ -205,6 +241,7 @@
       packages = {
         vf2 = runVisionFive2;
         vf2-debug = runVisionFive2Debug;
+        vf2-dtb = visionFive2Dtb;
       };
     };
 }

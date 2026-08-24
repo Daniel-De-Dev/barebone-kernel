@@ -8,32 +8,29 @@
       ...
     }:
     let
-      riscvPkgs = pkgs.pkgsCross.riscv64;
-      crossCompile = riscvPkgs.stdenv.cc.targetPrefix;
-
       board = boards.mangopi;
 
       opensbiLib = import ./opensbi.nix { inherit inputs lib pkgs; };
 
       mangoPiDtbName = "mangopi-mq-pro.dtb";
       # TODO: Look into reserving the memory region for DTB if OpenSBI
-      # doesn't already dynamically
+      # doesn't already dynamically (also for vf2)
       mangoPiDtsiName = "barebone-memory.dtsi";
 
       /*
-        Build the DTB used by the MangoPi MQ Pro FEL boot path.
+        Build the hardware DTB passed to OpenSBI and the kernel.
 
-        The board DTS does not contain a DRAM memory node. Since the FEL path
-        enters OpenSBI without an SPL preparing the DTB, inject the known DRAM
-        region from the board memory map before building it.
+        The MangoPi MQ Pro hardware description is compiled directly from
+        `arch/riscv/dts/sun20i-d1-mangopi-mq-pro.dts`.
 
-        U-Boot proper is not built or used; its D1 source tree is only used to
-        build the board DTB.
+        The upstream board DTS does not contain a DRAM memory node. Since the FEL
+        path initializes DRAM before entering OpenSBI, the known DRAM region is
+        injected from the board memory map before compiling the hardware DTB.
 
         Source:
         https://github.com/smaeul/u-boot/blob/2e89b706f5c956a70c989cd31665f1429e9a0b48/arch/riscv/dts/sun20i-d1-mangopi-mq-pro.dts
       */
-      mangoPiDtb = riscvPkgs.stdenv.mkDerivation {
+      mangoPiDtb = pkgs.stdenv.mkDerivation {
         pname = "mangopi-mq-pro-dtb";
         version = inputs.src-uboot-d1.shortRev or "dirty";
         src = inputs.src-uboot-d1;
@@ -52,51 +49,40 @@
             arch/riscv/dts/${mangoPiDtsiName}
 
           substituteInPlace arch/riscv/dts/${mangoPiDtsiName} \
-            --replace-fail '@dramUnitAddress@' '${lib.toHexString boards.mangopi.dramBase}' \
-            --replace-fail '@dramBase@' '${boards.toHex boards.mangopi.dramBase}' \
-            --replace-fail '@dramSize@' '${boards.toHex boards.mangopi.dramSize}'
+            --replace-fail '@dramUnitAddress@' '${lib.toHexString board.dramBase}' \
+            --replace-fail '@dramBase@' '${boards.toHex board.dramBase}' \
+            --replace-fail '@dramSize@' '${boards.toHex board.dramSize}'
         '';
 
-        nativeBuildInputs = with pkgs; [
-          bc
-          bison
-          flex
-          (python3.withPackages (ps: [
-            ps.libfdt
-            ps.setuptools_80
-          ]))
-          stdenv.cc
-          perl
-        ];
+        dontConfigure = true;
 
-        buildInputs = with pkgs; [
-          openssl
-          gnutls
-        ];
+        buildPhase = ''
+          runHook preBuild
 
-        enableParallelBuilding = true;
+          ${pkgs.stdenv.cc}/bin/cpp \
+            -nostdinc \
+            -I include \
+            -I arch/riscv/dts \
+            -undef \
+            -D__DTS__ \
+            -x assembler-with-cpp \
+            -o mangopi-mq-pro.dts.preprocessed \
+            arch/riscv/dts/sun20i-d1-mangopi-mq-pro.dts
 
-        env = {
-          ARCH = "riscv";
-          CROSS_COMPILE = crossCompile;
-          DTC = lib.getExe pkgs.dtc;
-        };
+          ${lib.getExe pkgs.dtc} \
+            -I dts \
+            -O dtb \
+            -o ${mangoPiDtbName} \
+            mangopi-mq-pro.dts.preprocessed
 
-        buildFlags = [ "u-boot.dtb" ];
-
-        configurePhase = ''
-          runHook preConfigure
-
-          make -j"$NIX_BUILD_CORES" mangopi_mq_pro_defconfig
-
-          runHook postConfigure
+          runHook postBuild
         '';
 
         installPhase = ''
           runHook preInstall
 
           install -Dm0644 \
-            u-boot.dtb \
+            ${mangoPiDtbName} \
             "$out/${mangoPiDtbName}"
 
           runHook postInstall
@@ -168,6 +154,8 @@
           programName = "run-mangopi";
           kernel = config.packages.kernel-mangopi;
         };
+
+        mangopi-dtb = mangoPiDtb;
       };
     };
 }
