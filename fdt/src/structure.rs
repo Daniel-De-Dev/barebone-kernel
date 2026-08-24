@@ -107,8 +107,14 @@ pub enum StructureError {
 
   /// A non-root node contains an invalid node name.
   InvalidNodeName {
+    /// Byte offset at which the last token is.
+    token_offset: usize,
+
     /// Byte offset at which the node name begins.
-    offset: usize,
+    name_offset: usize,
+
+    /// The current node's depth.
+    depth: usize,
 
     /// Reason the node name is invalid.
     source: NodeNameError,
@@ -462,7 +468,9 @@ impl<'a> Structure<'a> {
           let name = reader.read_nul_terminated()?;
 
           validate_node_name(name).map_err(|source| StructureError::InvalidNodeName {
-            offset: name_offset,
+            token_offset,
+            name_offset,
+            depth,
             source,
           })?;
 
@@ -824,7 +832,9 @@ mod tests {
     assert_eq!(
       Structure::new(&bytes, &strings()).unwrap_err(),
       StructureError::InvalidNodeName {
-        offset: name_offset,
+        token_offset,
+        name_offset,
+        depth: 1,
         source: NodeNameError::InvalidFirstCharacter { byte: b'1' },
       }
     );
