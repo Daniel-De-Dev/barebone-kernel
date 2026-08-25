@@ -1,7 +1,9 @@
-//! Bare-metal kernel entry point.
+//! Bare-metal kernel
 //!
-//! This crate coordinates the boot flow after the target-specific entry code
-//! has established a valid Rust execution environment.
+//! This crate implements bare essentials to have a proof of concept kernel
+//! compile and run. Mainly to begin targeting running on RISC-V 64-bit
+//! architecture with SBI. But effort will be made to allow for modularity,
+//! where implementations could be swapped out easily.
 
 #![no_std]
 #![no_main]
