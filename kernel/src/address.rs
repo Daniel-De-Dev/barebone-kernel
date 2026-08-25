@@ -28,7 +28,7 @@ impl PhysAddr {
 
   /// Returns the machine-sized integer representation of this physical
   /// address.
-  pub(crate) const fn as_usize(self) -> usize {
+  pub(super) const fn as_usize(self) -> usize {
     self.0
   }
 }

@@ -1,31 +1,30 @@
 //! RISC-V 64-bit architecture support for the kernel.
 //!
 //! This module provides the architecture-specific boundary between the
-//! kernel's Rust code and an RV64 execution environment.
+//! kernel and an RV64 execution environment.
 //!
-//! It is responsible for the earliest CPU setup required before entering
-//! Rust and for CPU-specific primitives used by the rest of the
-//! kernel.
+//! # Kernel entry
 //!
-//! # Entry
-//!
-//! The `_start` entry point prepares the execution environment expected by
-//! Rust code:
+//! The `_start` entry point establishes the minimum execution environment
+//! required before entering Rust:
 //!
 //! 1. Initialize the global pointer (`gp`).
 //! 2. Initialize the stack pointer (`sp`).
 //! 3. Clear the `.bss` section.
 //! 4. Transfer control to [`crate::main`].
 //!
-//! The firmware-provided `a0` and `a1` registers are left untouched so that
-//! they are passed to `main` as the hart ID and device-tree address,
+//! The firmware-provided `a0` and `a1` registers are deliberately preserved
+//! so they are passed to `main` as the hart ID and device-tree address,
 //! respectively.
 //!
 //! The linker script provides the symbols used during initialization,
 //! including `__global_pointer$`, `_stack_end`, `_bss_start`, and `_bss_end`.
 //!
-//! The linker script keeps `_bss_start` and `_bss_end` 8-byte aligned because
-//! startup clears `.bss` using 8-byte stores.
+//! `_bss_start` and `_bss_end` are 8-byte aligned because startup clears
+//! `.bss` using 8-byte stores.
+
+mod trap;
+pub(crate) use trap::init as init_trap;
 
 use core::arch::{asm, global_asm};
 
@@ -38,35 +37,35 @@ use core::arch::{asm, global_asm};
 // arguments passed to `main`.
 global_asm!(
   r#"
-    .section .text.init
-    .global _start
+  .section .text.init
+  .global _start
 
 _start:
-    .option push
-    .option norelax
+  .option push
+  .option norelax
 
-    /* Initialize gp */
-    la gp, __global_pointer$
+  /* Initialize gp */
+  la gp, __global_pointer$
 
-    .option pop
+  .option pop
 
-    /* Initilize stack */
-    la sp, _stack_end
+  /* Initialize stack */
+  la sp, _stack_end
 
-    /* Clear .bss */
-    la t0, _bss_start
-    la t1, _bss_end
+  /* Clear .bss */
+  la t0, _bss_start
+  la t1, _bss_end
 
 .bss_loop:
-    bgeu t0, t1, .bss_done
+  bgeu t0, t1, .bss_done
 
-    sd zero, 0(t0)
-    addi t0, t0, 8
+  sd zero, 0(t0)
+  addi t0, t0, 8
 
-    j .bss_loop
+  j .bss_loop
 
 .bss_done:
-    tail main
+  tail main
   "#
 );
 

@@ -1,4 +1,5 @@
 BootROM
+CSRs
 D1
 DTB
 DTBs
@@ -13,6 +14,7 @@ NOP
 NUL
 OpenSBI
 Qemu
+RV64
 SBI
 SPL
 StarFive

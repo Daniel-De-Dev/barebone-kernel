@@ -2,12 +2,6 @@
 //!
 //! This crate coordinates the boot flow after the target-specific entry code
 //! has established a valid Rust execution environment.
-//!
-//! Architecture-specific startup and CPU primitives are provided by [`arch`],
-//! while kernel logging is provided by [`logging`].
-//!
-//! The RISC-V entry code transfers control to [`main`] with the boot hart ID
-//! and device-tree address supplied by the previous firmware stage.
 
 #![no_std]
 #![no_main]
@@ -35,12 +29,14 @@ extern "C" fn main(hart_id: usize, dtb: usize) -> ! {
 
   logging::info!("kernel entered (hart={}, dtb={:#x})", hart_id, dtb_phys);
 
+  arch::init_trap();
+
   // SAFETY:
   // Address translation has not been enabled, so the physical DTB address
   // supplied by the firmware is directly addressable by the kernel.
   let fdt = unsafe { Fdt::from_ptr(dtb_phys.as_usize() as *const u8) };
 
-  logging::info!("FDT data structure:\n{:#?}", fdt);
+  logging::debug!("FDT data structure:\n{:#?}", fdt);
 
   logging::debug!("kernel halting");
   arch::halt()

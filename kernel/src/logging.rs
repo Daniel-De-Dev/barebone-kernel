@@ -1,20 +1,24 @@
 //! Kernel logging support.
 //!
-//! This module provides lightweight logging macros that format messages and
-//! write them to the kernel console.
+//! This module provides logging macros for formatting messages with a severity
+//! level and source location before writing them to the kernel console.
 
 use crate::console::Console;
 use core::fmt::{self, Write};
 
-/// Logging severity.
+/// Severity level of a log record.
 pub(super) enum Level {
-  /// Detailed diagnostic information useful during debugging.
+  /// Detailed diagnostic information intended for debugging.
   Debug,
 
-  /// General information about normal operation.
+  /// Informational messages describing normal kernel operation.
   Info,
-  // Warn,
-  // Error,
+
+  /// Potential problems or unexpected conditions that do not prevent operation.
+  Warn,
+
+  /// Errors indicating that an operation or subsystem has failed.
+  Error,
 }
 
 impl fmt::Display for Level {
@@ -22,15 +26,15 @@ impl fmt::Display for Level {
     let level = match self {
       Self::Debug => "DEBUG",
       Self::Info => "INFO",
-      // Self::Warn => f.write_str("WARN"),
-      // Self::Error => f.write_str("ERROR"),
+      Self::Warn => "WARN",
+      Self::Error => "ERROR",
     };
 
     f.pad(level)
   }
 }
 
-/// Writes one formatted log record to the kernel console.
+/// Formats and writes a single log record to the kernel console.
 pub(super) fn write(level: Level, file: &str, line: u32, args: fmt::Arguments<'_>) {
   let mut console = Console;
 
@@ -39,7 +43,7 @@ pub(super) fn write(level: Level, file: &str, line: u32, args: fmt::Arguments<'_
   }
 }
 
-/// Logs diagnostic information useful while debugging.
+/// Logs diagnostic information intended for debugging.
 ///
 /// Debug messages are compiled only when debug assertions are enabled.
 macro_rules! debug {
@@ -56,7 +60,7 @@ macro_rules! debug {
   }};
 }
 
-/// Logs information about normal kernel operation.
+/// Logs informational messages about normal kernel operation.
 macro_rules! info {
   ($($arg:tt)*) => {
     $crate::logging::write(
@@ -68,26 +72,29 @@ macro_rules! info {
   };
 }
 
-// macro_rules! warn {
-//   ($($arg:tt)*) => {
-//     $crate::logging::write(
-//       $crate::logging::Level::Warn,
-//       file!(),
-//       line!(),
-//       format_args!($($arg)*),
-//     )
-//   };
-// }
+/// Logs a potential problem or unexpected condition that does not prevent
+/// continued operation.
+macro_rules! warn {
+  ($($arg:tt)*) => {
+    $crate::logging::write(
+      $crate::logging::Level::Warn,
+      file!(),
+      line!(),
+      format_args!($($arg)*),
+    )
+  };
+}
 
-// macro_rules! error {
-//   ($($arg:tt)*) => {
-//     $crate::logging::write(
-//       $crate::logging::Level::Error,
-//       file!(),
-//       line!(),
-//       format_args!($($arg)*),
-//     )
-//   };
-// }
+/// Logs an error indicating that an operation or subsystem has failed.
+macro_rules! error {
+  ($($arg:tt)*) => {
+    $crate::logging::write(
+      $crate::logging::Level::Error,
+      file!(),
+      line!(),
+      format_args!($($arg)*),
+    )
+  };
+}
 
-pub(super) use {debug, info};
+pub(super) use {debug, error, info};
