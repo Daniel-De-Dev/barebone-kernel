@@ -41,8 +41,8 @@ pub enum BlobError {
     size: usize,
   },
 
-  // TODO: Look into if this might be unnecessary to maintain
   /// The DTB is too large to represent as a Rust slice on this target.
+  #[cfg(target_pointer_width = "32")]
   TooLarge {
     /// Declared total size of the DTB, in bytes.
     total_size: usize,
@@ -116,6 +116,10 @@ impl<'a> Fdt<'a> {
     let header = Header::new(&header_bytes)?;
     let total_size = header.total_size();
 
+    // `totalsize` is encoded as a `u32`. On 32-bit targets it may exceed
+    // `isize::MAX`, violating the maximum size permitted for a Rust slice.
+    // On 64-bit targets every possible value satisfies `u32::MAX < isize::MAX`.
+    #[cfg(target_pointer_width = "32")]
     if total_size > isize::MAX as usize {
       return Err(
         BlobError::TooLarge {
