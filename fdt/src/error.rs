@@ -2,8 +2,9 @@
 //!
 //! [`Error`] is the top-level error returned by the parser. More specific error
 //! types are preserved as variants so callers can inspect the stage at which
-//! validation failed without losing the underlying diagnostic information.
+//! validation failed.
 
+use crate::reader::ReadError;
 pub use crate::{fdt::BlobError, header::HeaderError, structure::StructureError};
 
 /// An error encountered while constructing or validating an FDT.
@@ -20,6 +21,9 @@ pub enum Error {
 
   /// An error occurred while validating the FDT structure block.
   Structure(StructureError),
+
+  /// An error occurred while validating the FDT memory reservation block.
+  Reservation(ReadError),
 }
 
 /// Converts a blob-level error into the top-level FDT error type.

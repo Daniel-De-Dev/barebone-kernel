@@ -20,6 +20,7 @@ SPL
 StarFive
 VisionFive
 devicetree
+devicetrees
 representable
 u32
 usize

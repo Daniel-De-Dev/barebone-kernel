@@ -16,6 +16,7 @@ mod error;
 mod fdt;
 mod header;
 mod reader;
+mod reservation;
 mod strings;
 mod structure;
 

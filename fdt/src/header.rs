@@ -8,8 +8,8 @@
 //! be determined from the header alone.
 //!
 //! The header does not encode the size of the memory reservation block.
-//! Only its starting offset can be bounded here; its complete extent and any
-//! overlap involving that extent cannot be determined from the header alone.
+//! Its starting offset can be validated from the header fields, but its
+//! complete extent cannot be determined from the header alone.
 //!
 //! Implementation based on [Devicetree Specification v0.4](https://www.devicetree.org/).
 
@@ -156,6 +156,18 @@ pub enum HeaderError {
     /// Second overlapping block.
     second: BlockKind,
   },
+
+  /// A block begins inside another known block.
+  BlockOffsetInsideBlock {
+    /// Block whose start lies inside another block.
+    block: BlockKind,
+
+    /// Block containing the invalid start offset.
+    containing: BlockKind,
+
+    /// Byte offset of the block start.
+    offset: usize,
+  },
 }
 
 /// Validated information decoded from an FDT header.
@@ -176,9 +188,9 @@ pub(super) struct Header {
 
   /// Byte offset at which the memory reservation block begins.
   ///
-  /// The offset is aligned, does not point inside the header, and does not lie
-  /// beyond `total_size`. The complete block extent is not known from the
-  /// header.
+  /// The offset is aligned, lies within the DTB, does not point inside the
+  /// header, structure block, or strings block. The complete reservation-block
+  /// extent is not known from the header alone.
   off_mem_rsvmap: usize,
 
   /// FDT format version decoded from the header.
@@ -250,6 +262,8 @@ impl Header {
   /// - The memory reservation offset does not exceed `total_size`.
   /// - The structure and strings ranges lie entirely within `total_size`.
   /// - The structure and strings ranges do not overlap.
+  /// - The memory reservation block does not begin inside the structure or
+  ///   strings block.
   ///
   /// # Errors
   ///
@@ -269,6 +283,8 @@ impl Header {
   ///   not fit within the declared blob.
   /// - [`HeaderError::BlocksOverlap`] if the structure and strings ranges
   ///   overlap.
+  /// - [`HeaderError::BlockOffsetInsideBlock`] if the memory reservation block
+  ///   begins inside the structure or strings block.
   pub(super) fn new(bytes: &[u8; HEADER_SIZE]) -> Result<Self, HeaderError> {
     let magic = read_be_u32(bytes, MAGIC);
 
@@ -332,7 +348,6 @@ impl Header {
       }
     }
 
-    // The header provides the reservation block's start, but not its size.
     if off_mem_rsvmap > total_size {
       return Err(HeaderError::BlockOffsetOutOfBounds {
         block: BlockKind::MemoryReservation,
@@ -362,6 +377,19 @@ impl Header {
       });
     }
 
+    for (containing, range) in [
+      (BlockKind::Structure, &structure_range),
+      (BlockKind::Strings, &strings_range),
+    ] {
+      if range.contains(&off_mem_rsvmap) {
+        return Err(HeaderError::BlockOffsetInsideBlock {
+          block: BlockKind::MemoryReservation,
+          containing,
+          offset: off_mem_rsvmap,
+        });
+      }
+    }
+
     Ok(Self {
       total_size,
       structure_range,
@@ -376,6 +404,14 @@ impl Header {
   /// Returns the declared total size of the FDT blob, in bytes.
   pub(super) const fn total_size(&self) -> usize {
     self.total_size
+  }
+
+  /// Returns the validated starting offset of the memory reservation block.
+  ///
+  /// The offset is 8-byte aligned, lies within the DTB, and does not point
+  /// inside the header, structure block, or strings block.
+  pub(super) const fn reservation_offset(&self) -> usize {
+    self.off_mem_rsvmap
   }
 
   /// Returns the validated byte range occupied by the structure block.
@@ -677,5 +713,22 @@ mod tests {
         total_size: 1024,
       }
     );
+  }
+
+  #[test]
+  fn reservation_offset_inside_known_block_is_rejected() {
+    for (offset, containing) in [(72, BlockKind::Structure), (520, BlockKind::Strings)] {
+      let mut bytes = valid_header_bytes();
+      set_u32(&mut bytes, RESERVATION_OFFSET, offset as u32);
+
+      assert_eq!(
+        Header::new(&bytes).unwrap_err(),
+        HeaderError::BlockOffsetInsideBlock {
+          block: BlockKind::MemoryReservation,
+          containing,
+          offset,
+        }
+      );
+    }
   }
 }

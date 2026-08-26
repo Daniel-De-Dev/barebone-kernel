@@ -59,12 +59,25 @@ impl<'a> Reader<'a> {
   ///
   /// # Errors
   ///
-  /// Returns [`ReadError::Truncated`] if fewer than four bytes remain.
+  /// Returns [`ReadError::Truncated`] if fewer than 4 bytes remain.
   pub(super) fn read_u32(&mut self) -> Result<u32, ReadError> {
     let bytes = self.read_bytes(4)?;
 
     Ok(u32::from_be_bytes(
       bytes.try_into().expect("slice length is known to be 4"),
+    ))
+  }
+
+  /// Reads a big-endian `u64`.
+  ///
+  /// # Errors
+  ///
+  /// Returns [`ReadError::Truncated`] if fewer than 8 bytes remain.
+  pub(super) fn read_u64(&mut self) -> Result<u64, ReadError> {
+    let bytes = self.read_bytes(8)?;
+
+    Ok(u64::from_be_bytes(
+      bytes.try_into().expect("slice length is known to be 8"),
     ))
   }
 
@@ -155,6 +168,35 @@ mod tests {
     assert_eq!(result, 0x1234_5678);
     assert_eq!(reader.position(), 4);
     assert_eq!(reader.remaining(), 1);
+  }
+
+  #[test]
+  fn u64_is_read_and_cursor_advances() {
+    let data = [0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0xff];
+
+    let mut reader = Reader::new(&data);
+
+    assert_eq!(reader.read_u64(), Ok(0x0123_4567_89ab_cdef));
+
+    assert_eq!(reader.position(), 8);
+    assert_eq!(reader.remaining(), 1);
+  }
+
+  #[test]
+  fn truncated_u64_is_rejected_without_advancing() {
+    let data = [0; 7];
+    let mut reader = Reader::new(&data);
+
+    assert_eq!(
+      reader.read_u64(),
+      Err(ReadError::Truncated {
+        offset: 0,
+        requested: 8,
+        remaining: 7,
+      })
+    );
+
+    assert_eq!(reader.position(), 0);
   }
 
   #[test]

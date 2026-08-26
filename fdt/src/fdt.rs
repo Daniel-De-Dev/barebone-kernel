@@ -1,7 +1,7 @@
 //! Construction and validation of a flattened devicetree blob.
 //!
-//! This module defines [`Fdt`], the top-level validated view of a DTB, and owns
-//! the unsafe boundary through which raw DTB memory enters the parser.
+//! This module defines [`Fdt`], the validated view of a DTB, and owns the
+//! unsafe boundary through which raw DTB memory enters the parser.
 //!
 //! Successful construction establishes a bounded immutable view of the blob and
 //! validates the data needed by the views retained in [`Fdt`].
@@ -13,6 +13,7 @@ use core::slice;
 use crate::{
   error::Error,
   header::{HEADER_SIZE, Header},
+  reservation::Reservations,
   strings::Strings,
   structure::Structure,
 };
@@ -68,8 +69,11 @@ pub struct Fdt<'a> {
   /// Validated structure block.
   structure: Structure<'a>,
 
-  /// Strings block referenced by the structure block.
+  /// Validated strings block.
   strings: Strings<'a>,
+
+  /// Validated memory reservations block.
+  reservations: Reservations<'a>,
 }
 
 impl<'a> Fdt<'a> {
@@ -150,10 +154,28 @@ impl<'a> Fdt<'a> {
     let strings = Strings::new(strings_bytes);
     let structure = Structure::new(structure_bytes, &strings)?;
 
+    // The reservation block does not encode its own size. Bound its candidate
+    // extent by the nearest known block beginning after it, or by the end of the
+    // DTB if no known block follows it. `Reservations::new` determines the actual
+    // end from the terminating `(0, 0)` entry
+    let reservation_start = header.reservation_offset();
+    let mut reservation_limit = total_size;
+
+    for range in [header.structure_range(), header.strings_range()] {
+      if range.start > reservation_start {
+        reservation_limit = reservation_limit.min(range.start);
+      }
+    }
+
+    let reservation_bytes = &bytes[reservation_start..reservation_limit];
+
+    let reservations = Reservations::new(reservation_bytes).map_err(Error::Reservation)?;
+
     Ok(Self {
       header,
       structure,
       strings,
+      reservations,
     })
   }
 }
@@ -161,7 +183,7 @@ impl<'a> Fdt<'a> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::{error::Error, header::HeaderError, structure::StructureError};
+  use crate::{error::Error, header::HeaderError, reader::ReadError, structure::StructureError};
 
   // TODO: Look into elegantly solving the repetition of helper functions and
   // constants. (Same stuff defined in `header.rs` & `structure.rs`)
@@ -187,13 +209,14 @@ mod tests {
     bytes[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
   }
 
-  fn minimal_blob() -> Aligned<56> {
-    let mut bytes = [0; 56];
+  // TODO: Centralize the test DTB layout offsets if this grows further.
+  fn minimal_blob() -> Aligned<72> {
+    let mut bytes = [0; 72];
 
     set_u32(&mut bytes, MAGIC, 0xd00d_feed);
-    set_u32(&mut bytes, TOTAL_SIZE, 56);
-    set_u32(&mut bytes, STRUCTURE_OFFSET, 40);
-    set_u32(&mut bytes, STRINGS_OFFSET, 56);
+    set_u32(&mut bytes, TOTAL_SIZE, 72);
+    set_u32(&mut bytes, STRUCTURE_OFFSET, 56);
+    set_u32(&mut bytes, STRINGS_OFFSET, 72);
     set_u32(&mut bytes, RESERVATION_OFFSET, 40);
     set_u32(&mut bytes, VERSION, 17);
     set_u32(&mut bytes, LAST_COMP_VERSION, 16);
@@ -201,10 +224,10 @@ mod tests {
     set_u32(&mut bytes, STRINGS_SIZE, 0);
     set_u32(&mut bytes, STRUCTURE_SIZE, 16);
 
-    set_u32(&mut bytes, 40, FDT_BEGIN_NODE);
+    set_u32(&mut bytes, 56, FDT_BEGIN_NODE);
 
-    set_u32(&mut bytes, 48, FDT_END_NODE);
-    set_u32(&mut bytes, 52, FDT_END);
+    set_u32(&mut bytes, 64, FDT_END_NODE);
+    set_u32(&mut bytes, 68, FDT_END);
 
     Aligned(bytes)
   }
@@ -217,9 +240,9 @@ mod tests {
     // for the returned `Fdt`.
     let fdt = unsafe { Fdt::from_ptr(blob.0.as_ptr()) }.expect("valid DTB should parse");
 
-    assert_eq!(fdt.header.total_size(), 56);
-    assert_eq!(fdt.header.structure_range(), 40..56);
-    assert_eq!(fdt.header.strings_range(), 56..56);
+    assert_eq!(fdt.header.total_size(), 72);
+    assert_eq!(fdt.header.structure_range(), 56..72);
+    assert_eq!(fdt.header.strings_range(), 72..72);
   }
 
   #[test]
@@ -264,7 +287,7 @@ mod tests {
   fn structure_error_is_propagated() {
     let mut blob = minimal_blob();
 
-    set_u32(&mut blob.0, 40, FDT_END);
+    set_u32(&mut blob.0, 56, FDT_END);
 
     let error = unsafe { Fdt::from_ptr(blob.0.as_ptr()) }.unwrap_err();
 
@@ -273,6 +296,23 @@ mod tests {
       Error::Structure(StructureError::ExpectedRootNode {
         offset: 0,
         found: FDT_END,
+      })
+    );
+  }
+
+  #[test]
+  fn reservation_error_is_propagated() {
+    let mut blob = minimal_blob();
+
+    blob.0[40..48].copy_from_slice(&1_u64.to_be_bytes());
+    blob.0[48..56].copy_from_slice(&1_u64.to_be_bytes());
+
+    assert_eq!(
+      unsafe { Fdt::from_ptr(blob.0.as_ptr()) }.unwrap_err(),
+      Error::Reservation(ReadError::Truncated {
+        offset: 16,
+        requested: 8,
+        remaining: 0,
       })
     );
   }

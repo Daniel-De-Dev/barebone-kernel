@@ -630,6 +630,53 @@ mod tests {
   }
 
   #[test]
+  fn empty_structure_block_is_rejected() {
+    let bytes = [];
+
+    assert_eq!(
+      Structure::new(&bytes, &strings()).unwrap_err(),
+      StructureError::Read(ReadError::Truncated {
+        offset: 0,
+        requested: 4,
+        remaining: 0,
+      })
+    );
+  }
+
+  #[test]
+  fn missing_root_node_name_is_rejected() {
+    let mut bytes = Vec::new();
+
+    push_token(&mut bytes, Token::BeginNode);
+
+    assert_eq!(
+      Structure::new(&bytes, &strings()).unwrap_err(),
+      StructureError::Read(ReadError::Truncated {
+        offset: 4,
+        requested: 1,
+        remaining: 0,
+      })
+    );
+  }
+
+  #[test]
+  fn truncated_root_node_padding_is_rejected() {
+    let mut bytes = Vec::new();
+
+    push_token(&mut bytes, Token::BeginNode);
+    bytes.push(0); // Empty root name, but missing 3 alignment bytes.
+
+    assert_eq!(
+      Structure::new(&bytes, &strings()).unwrap_err(),
+      StructureError::Read(ReadError::Truncated {
+        offset: 5,
+        requested: 3,
+        remaining: 0,
+      })
+    );
+  }
+
+  #[test]
   fn empty_node_name_is_rejected() {
     assert_eq!(
       validate_node_name(b""),
@@ -840,6 +887,69 @@ mod tests {
         offset: property_offset,
         depth: 1,
       }
+    );
+  }
+
+  #[test]
+  fn missing_property_length_is_rejected() {
+    let mut bytes = Vec::new();
+
+    push_begin_node(&mut bytes, b"");
+    push_token(&mut bytes, Token::Property);
+
+    let expected_offset = bytes.len();
+
+    assert_eq!(
+      Structure::new(&bytes, &strings()).unwrap_err(),
+      StructureError::Read(ReadError::Truncated {
+        offset: expected_offset,
+        requested: 4,
+        remaining: 0,
+      })
+    );
+  }
+
+  #[test]
+  fn missing_property_name_offset_is_rejected() {
+    let mut bytes = Vec::new();
+
+    push_begin_node(&mut bytes, b"");
+    push_token(&mut bytes, Token::Property);
+    push_u32(&mut bytes, 0);
+
+    let expected_offset = bytes.len();
+
+    assert_eq!(
+      Structure::new(&bytes, &strings()).unwrap_err(),
+      StructureError::Read(ReadError::Truncated {
+        offset: expected_offset,
+        requested: 4,
+        remaining: 0,
+      })
+    );
+  }
+
+  #[test]
+  fn truncated_property_padding_is_rejected() {
+    let mut bytes = Vec::new();
+
+    push_begin_node(&mut bytes, b"");
+
+    push_token(&mut bytes, Token::Property);
+    push_u32(&mut bytes, 1);
+    push_u32(&mut bytes, COMPATIBLE_OFFSET);
+
+    bytes.push(0xaa);
+
+    let padding_offset = bytes.len();
+
+    assert_eq!(
+      Structure::new(&bytes, &strings()).unwrap_err(),
+      StructureError::Read(ReadError::Truncated {
+        offset: padding_offset,
+        requested: 3,
+        remaining: 0,
+      })
     );
   }
 
