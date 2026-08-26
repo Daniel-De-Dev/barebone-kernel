@@ -58,18 +58,8 @@ pub enum NodeNameError {
 /// An error encountered while validating an FDT structure block.
 #[derive(Debug, PartialEq)]
 pub enum StructureError {
-  /// The structure block ended before a required number of bytes could be read.
-  Truncated {
-    /// Byte offset at which the read was attempted, relative to the start of
-    /// the structure block.
-    offset: usize,
-
-    /// Number of bytes required by the operation.
-    requested: usize,
-
-    /// Number of bytes available from `offset`.
-    remaining: usize,
-  },
+  /// A bounded read of the structure block failed.
+  Read(ReadError),
 
   /// A word in a token position does not encode a recognized FDT token.
   InvalidToken {
@@ -171,22 +161,9 @@ pub enum StructureError {
   },
 }
 
-/// Converts a bounded-read failure into the corresponding structure error.
 impl From<ReadError> for StructureError {
   fn from(error: ReadError) -> Self {
-    match error {
-      ReadError::Truncated {
-        offset,
-        requested,
-        remaining,
-      } => Self::Truncated {
-        offset,
-        requested,
-        remaining,
-      },
-
-      ReadError::MissingNulTerminator { offset } => Self::UnterminatedNodeName { offset },
-    }
+    Self::Read(error)
   }
 }
 
@@ -355,7 +332,7 @@ fn validate_node_name(name: &[u8]) -> Result<(), NodeNameError> {
 ///
 /// # Errors
 ///
-/// Returns [`StructureError::Truncated`] if a complete token cannot be read, or
+/// Returns [`StructureError::Read`] if a complete token cannot be read, or
 /// [`StructureError::InvalidToken`] if the encoded value is not recognized.
 fn read_token(reader: &mut Reader<'_>) -> Result<(usize, Token), StructureError> {
   let offset = reader.position();
@@ -372,7 +349,7 @@ fn read_token(reader: &mut Reader<'_>) -> Result<(usize, Token), StructureError>
 ///
 /// # Errors
 ///
-/// Returns [`StructureError::Truncated`] if the block ends before another
+/// Returns [`StructureError::Read`] if the block ends before another
 /// complete token is available, or [`StructureError::InvalidToken`] if an
 /// unrecognized token value is encountered.
 fn read_non_nop_token(reader: &mut Reader<'_>) -> Result<(usize, Token), StructureError> {
@@ -408,7 +385,7 @@ impl<'a> Structure<'a> {
   ///
   /// Returns:
   ///
-  /// - [`StructureError::Truncated`] if any required token, field, value, or
+  /// - [`StructureError::Read`] if any required token, field, value, or
   ///   alignment padding extends beyond the structure block.
   /// - [`StructureError::InvalidToken`] if an unrecognized token value is
   ///   encountered.
@@ -465,7 +442,12 @@ impl<'a> Structure<'a> {
       match token {
         Token::BeginNode => {
           let name_offset = reader.position();
-          let name = reader.read_nul_terminated()?;
+          let name =
+            reader
+              .read_nul_terminated()
+              .map_err(|_| StructureError::UnterminatedNodeName {
+                offset: name_offset,
+              })?;
 
           validate_node_name(name).map_err(|source| StructureError::InvalidNodeName {
             token_offset,
@@ -923,11 +905,11 @@ mod tests {
 
     assert_eq!(
       Structure::new(&bytes, &strings()).unwrap_err(),
-      StructureError::Truncated {
+      StructureError::Read(ReadError::Truncated {
         offset: value_offset,
         requested: 4,
         remaining: 2,
-      }
+      })
     );
   }
 
@@ -1024,11 +1006,11 @@ mod tests {
 
     assert_eq!(
       Structure::new(&bytes, &strings()).unwrap_err(),
-      StructureError::Truncated {
+      StructureError::Read(ReadError::Truncated {
         offset: expected_offset,
         requested: 4,
         remaining: 0,
-      }
+      })
     );
   }
 }

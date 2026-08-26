@@ -5,7 +5,7 @@
 
 /// Errors produced while reading from a bounded byte slice.
 #[derive(Debug, PartialEq)]
-pub(super) enum ReadError {
+pub enum ReadError {
   /// The requested number of bytes was not available.
   Truncated {
     /// Offset at which the read was attempted, relative to the start of the slice.

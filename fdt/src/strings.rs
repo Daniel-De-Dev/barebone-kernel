@@ -8,6 +8,8 @@
 
 use core::fmt;
 
+use crate::reader::Reader;
+
 /// Errors produced while validating a property name in the strings block.
 #[derive(Debug, PartialEq)]
 pub enum PropertyNameError {
@@ -85,9 +87,7 @@ impl<'a> Strings<'a> {
   /// - Contains between 1 and 31 bytes.
   /// - Contains only characters permitted for property names by the DTSpec.
   ///
-  /// The offset is not required to point immediately after another NUL byte;
-  /// strings-block suffix sharing means an offset may refer to a valid suffix
-  /// of another stored string.
+  /// The offset is not required to point immediately after another NUL byte.
   ///
   /// # Errors
   ///
@@ -111,21 +111,18 @@ impl<'a> Strings<'a> {
       });
     }
 
-    let bytes = &self.bytes[offset..];
+    let mut reader = Reader::new(&self.bytes[offset..]);
 
-    let length = bytes
-      .iter()
-      .position(|&byte| byte == 0)
-      .ok_or(PropertyNameError::Unterminated { offset: raw_offset })?;
+    let name = reader
+      .read_nul_terminated()
+      .map_err(|_| PropertyNameError::Unterminated { offset: raw_offset })?;
 
-    if !(1..=31).contains(&length) {
+    if !(1..=31).contains(&name.len()) {
       return Err(PropertyNameError::InvalidLength {
         offset: raw_offset,
-        length,
+        length: name.len(),
       });
     }
-
-    let name = &bytes[..length];
 
     if let Some((index, byte)) = name.iter().copied().enumerate().find(|(_, byte)| {
       !byte.is_ascii_alphanumeric()
