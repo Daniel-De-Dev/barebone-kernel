@@ -13,7 +13,6 @@
         rustc = rustToolchain;
       };
 
-      # TODO: Make the doc output that opens in browser file location deterministic
       docs = naersk'.buildPackage {
         pname = "rust-workspace-docs";
         version = "0.1.0";
@@ -58,13 +57,21 @@
         '';
       };
 
-      openDocs = pkgs.writeShellApplication {
-        name = "open-docs";
+      previewDocs = pkgs.writeShellApplication {
+        name = "preview-docs";
 
-        runtimeInputs = [ pkgs.xdg-utils ];
+        runtimeInputs = [
+          pkgs.python3
+          pkgs.xdg-utils
+        ];
 
         text = ''
-          exec xdg-open "${docs}/index.html"
+          xdg-open "http://127.0.0.1:8000/kernel/index.html" >/dev/null 2>&1 &
+
+          exec python3 -m http.server \
+            8000 \
+            --bind 127.0.0.1 \
+            --directory "$PWD/result"
         '';
       };
 
@@ -107,10 +114,10 @@
       checks.docs = docs;
 
       apps = {
-        docs = {
-          meta.description = "Generates the docs and opens in default browser";
+        docs-preview = {
+          meta.description = "Serves generated documentation locally";
           type = "app";
-          program = "${openDocs}/bin/open-docs";
+          program = "${previewDocs}/bin/preview-docs";
         };
 
         docs-coverage = {
