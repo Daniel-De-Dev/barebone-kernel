@@ -11,6 +11,25 @@
         rustc = rustToolchain;
       };
 
+      workspace-clippy = naersk'.buildPackage {
+        pname = "workspace-clippy";
+        version = "0.1.0";
+        src = ./..;
+
+        mode = "clippy";
+
+        cargoBuildOptions =
+          options:
+          options
+          ++ [
+            "--workspace"
+            "--target"
+            "riscv64gc-unknown-none-elf"
+          ];
+
+        cargoClippyOptions = _: [ ];
+      };
+
       workspace-tests = naersk'.buildPackage {
         pname = "workspace-tests";
         version = "0.1.0";
@@ -40,7 +59,7 @@
       };
     in
     {
-      checks = { inherit workspace-tests; };
+      checks = { inherit workspace-tests workspace-clippy; };
 
       apps = {
         test = {
