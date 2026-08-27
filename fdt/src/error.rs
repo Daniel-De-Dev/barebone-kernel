@@ -4,14 +4,13 @@
 //! types are preserved as variants so callers can inspect the stage at which
 //! validation failed.
 
-use crate::reader::ReadError;
-pub use crate::{fdt::BlobError, header::HeaderError, structure::StructureError};
+use crate::{fdt::BlobError, header::HeaderError, reader::ReadError, structure::StructureError};
 
 /// An error encountered while constructing or validating an FDT.
 ///
 /// Each variant preserves the error produced by the component that detected the
 /// failure.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum Error {
   /// An error occurred while establishing the DTB byte range.
   Blob(BlobError),

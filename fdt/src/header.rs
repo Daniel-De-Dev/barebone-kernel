@@ -15,6 +15,8 @@
 
 use core::ops::Range;
 
+use crate::helpers;
+
 /// Size of an FDT header in bytes.
 pub(super) const HEADER_SIZE: usize = 40;
 
@@ -27,38 +29,67 @@ const SUPPORTED_VERSION: u32 = 17;
 /// Required backwards-compatible version for [`SUPPORTED_VERSION`].
 const EXPECTED_LAST_COMPATIBLE_VERSION: u32 = 16;
 
-/// Byte offset of the `magic` field within the FDT header.
-const MAGIC: usize = 0;
+/// Identifies one of the fixed-width 32-bit fields in an FDT header.
+///
+/// Each variant corresponds to a four-byte field defined by the FDT header
+/// layout. [`HeaderField::offset`] returns the byte offset at which that field
+/// begins relative to the start of the header.
+///
+/// Because this enum can only represent known header fields, every returned
+/// offset refers to a four-byte range fully contained within [`HEADER_SIZE`].
+#[derive(Clone, Copy)]
+enum HeaderField {
+  /// FDT magic value.
+  Magic,
 
-/// Byte offset of the `totalsize` field within the FDT header.
-const TOTAL_SIZE: usize = 4;
+  /// Total size of the DTB in bytes.
+  TotalSize,
 
-/// Byte offset of the `off_dt_struct` field within the FDT header.
-const STRUCTURE_OFFSET: usize = 8;
+  /// Byte offset of the structure block.
+  StructureOffset,
 
-/// Byte offset of the `off_dt_strings` field within the FDT header.
-const STRINGS_OFFSET: usize = 12;
+  /// Byte offset of the strings block.
+  StringsOffset,
 
-/// Byte offset of the `off_mem_rsvmap` field within the FDT header.
-const RESERVATION_OFFSET: usize = 16;
+  /// Byte offset of the memory reservation block.
+  ReservationOffset,
 
-/// Byte offset of the `version` field within the FDT header.
-const VERSION: usize = 20;
+  /// FDT format version.
+  Version,
 
-/// Byte offset of the `last_comp_version` field within the FDT header.
-const LAST_COMP_VERSION: usize = 24;
+  /// Earliest FDT version with which this blob is backwards-compatible.
+  LastCompatibleVersion,
 
-/// Byte offset of the `boot_cpuid_phys` field within the FDT header.
-const BOOT_CPUID_PHYS: usize = 28;
+  /// Physical identifier of the boot CPU.
+  BootCpuIdPhys,
 
-/// Byte offset of the `size_dt_strings` field within the FDT header.
-const STRINGS_SIZE: usize = 32;
+  /// Size of the strings block in bytes.
+  StringsSize,
 
-/// Byte offset of the `size_dt_struct` field within the FDT header.
-const STRUCTURE_SIZE: usize = 36;
+  /// Size of the structure block in bytes.
+  StructureSize,
+}
+
+impl HeaderField {
+  /// Returns the byte offset of this field within the fixed-size FDT header.
+  const fn offset(self) -> usize {
+    match self {
+      Self::Magic => 0,
+      Self::TotalSize => 4,
+      Self::StructureOffset => 8,
+      Self::StringsOffset => 12,
+      Self::ReservationOffset => 16,
+      Self::Version => 20,
+      Self::LastCompatibleVersion => 24,
+      Self::BootCpuIdPhys => 28,
+      Self::StringsSize => 32,
+      Self::StructureSize => 36,
+    }
+  }
+}
 
 /// Identifies a variable-sized block referenced by the FDT header.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum BlockKind {
   /// Memory reservation block.
   MemoryReservation,
@@ -71,7 +102,7 @@ pub enum BlockKind {
 }
 
 /// An error encountered while decoding or validating an FDT header.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum HeaderError {
   /// The header does not contain the FDT magic value.
   InvalidMagic {
@@ -205,9 +236,16 @@ pub(super) struct Header {
 
 /// Reads a big-endian `u32` from a field within an FDT header.
 ///
-/// `offset` is expected to identify the first byte of a four-byte field fully
-/// contained within `bytes`.
-fn read_be_u32(bytes: &[u8; HEADER_SIZE], offset: usize) -> u32 {
+/// [`HeaderField`] guarantees that the selected four-byte field is fully
+/// contained within the fixed-size header, so this operation is infallible.
+const fn read_be_u32(bytes: &[u8; HEADER_SIZE], field: HeaderField) -> u32 {
+  let offset = field.offset();
+
+  #[expect(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    reason = "HeaderField can only represent validated four-byte FDT header fields"
+  )]
   u32::from_be_bytes([
     bytes[offset],
     bytes[offset + 1],
@@ -216,24 +254,39 @@ fn read_be_u32(bytes: &[u8; HEADER_SIZE], offset: usize) -> u32 {
   ])
 }
 
+/// Reads a big-endian `u32` header field and converts it to `usize`.
+///
+/// The conversion is lossless on every target supported by this crate.
+const fn read_be_u32_as_usize(bytes: &[u8; HEADER_SIZE], field: HeaderField) -> usize {
+  helpers::usize_from_u32(read_be_u32(bytes, field))
+}
+
 /// Constructs a validated range for a known-size FDT block.
 ///
-/// The returned range is guaranteed to end at or before `total_size`. The
-/// bounds check is performed before calculating `offset + size`, so the range
-/// end cannot overflow.
+/// The returned range is guaranteed to end at or before `total_size`.
+/// Arithmetic overflow or an end beyond `total_size` is rejected.
 ///
 /// # Errors
 ///
 /// Returns [`HeaderError::BlockOutOfBounds`] if `offset` lies beyond
 /// `total_size` or if `size` exceeds the number of bytes remaining from
 /// `offset`.
-fn block_range(
+const fn block_range(
   block: BlockKind,
   offset: usize,
   size: usize,
   total_size: usize,
 ) -> Result<Range<usize>, HeaderError> {
-  if offset > total_size || size > total_size - offset {
+  let Some(end) = offset.checked_add(size) else {
+    return Err(HeaderError::BlockOutOfBounds {
+      block,
+      offset,
+      size,
+      total_size,
+    });
+  };
+
+  if end > total_size {
     return Err(HeaderError::BlockOutOfBounds {
       block,
       offset,
@@ -242,7 +295,7 @@ fn block_range(
     });
   }
 
-  Ok(offset..offset + size)
+  Ok(offset..end)
 }
 
 impl Header {
@@ -286,23 +339,23 @@ impl Header {
   /// - [`HeaderError::BlockOffsetInsideBlock`] if the memory reservation block
   ///   begins inside the structure or strings block.
   pub(super) fn new(bytes: &[u8; HEADER_SIZE]) -> Result<Self, HeaderError> {
-    let magic = read_be_u32(bytes, MAGIC);
+    let magic = read_be_u32(bytes, HeaderField::Magic);
 
     if magic != FDT_MAGIC {
       return Err(HeaderError::InvalidMagic { found: magic });
     }
 
-    let total_size = read_be_u32(bytes, TOTAL_SIZE) as usize;
-    let off_dt_struct = read_be_u32(bytes, STRUCTURE_OFFSET) as usize;
-    let off_dt_strings = read_be_u32(bytes, STRINGS_OFFSET) as usize;
-    let off_mem_rsvmap = read_be_u32(bytes, RESERVATION_OFFSET) as usize;
+    let total_size = read_be_u32_as_usize(bytes, HeaderField::TotalSize);
+    let off_dt_struct = read_be_u32_as_usize(bytes, HeaderField::StructureOffset);
+    let off_dt_strings = read_be_u32_as_usize(bytes, HeaderField::StringsOffset);
+    let off_mem_rsvmap = read_be_u32_as_usize(bytes, HeaderField::ReservationOffset);
 
-    let version = read_be_u32(bytes, VERSION);
-    let last_comp_version = read_be_u32(bytes, LAST_COMP_VERSION);
-    let boot_cpuid_phys = read_be_u32(bytes, BOOT_CPUID_PHYS);
+    let version = read_be_u32(bytes, HeaderField::Version);
+    let last_comp_version = read_be_u32(bytes, HeaderField::LastCompatibleVersion);
+    let boot_cpuid_phys = read_be_u32(bytes, HeaderField::BootCpuIdPhys);
 
-    let size_dt_strings = read_be_u32(bytes, STRINGS_SIZE) as usize;
-    let size_dt_struct = read_be_u32(bytes, STRUCTURE_SIZE) as usize;
+    let size_dt_strings = read_be_u32_as_usize(bytes, HeaderField::StringsSize);
+    let size_dt_struct = read_be_u32_as_usize(bytes, HeaderField::StructureSize);
 
     if total_size < HEADER_SIZE {
       return Err(HeaderError::TotalSizeTooSmall {
@@ -437,22 +490,24 @@ mod tests {
   fn valid_header_bytes() -> [u8; HEADER_SIZE] {
     let mut bytes = [0; HEADER_SIZE];
 
-    set_u32(&mut bytes, MAGIC, FDT_MAGIC);
-    set_u32(&mut bytes, TOTAL_SIZE, 1024);
-    set_u32(&mut bytes, STRUCTURE_OFFSET, 64);
-    set_u32(&mut bytes, STRINGS_OFFSET, 512);
-    set_u32(&mut bytes, RESERVATION_OFFSET, 40);
-    set_u32(&mut bytes, VERSION, 17);
-    set_u32(&mut bytes, LAST_COMP_VERSION, 16);
-    set_u32(&mut bytes, BOOT_CPUID_PHYS, 0x1234_5678);
-    set_u32(&mut bytes, STRINGS_SIZE, 100);
-    set_u32(&mut bytes, STRUCTURE_SIZE, 200);
+    set_u32(&mut bytes, HeaderField::Magic, FDT_MAGIC);
+    set_u32(&mut bytes, HeaderField::TotalSize, 1024);
+    set_u32(&mut bytes, HeaderField::StructureOffset, 64);
+    set_u32(&mut bytes, HeaderField::StringsOffset, 512);
+    set_u32(&mut bytes, HeaderField::ReservationOffset, 40);
+    set_u32(&mut bytes, HeaderField::Version, 17);
+    set_u32(&mut bytes, HeaderField::LastCompatibleVersion, 16);
+    set_u32(&mut bytes, HeaderField::BootCpuIdPhys, 0x1234_5678);
+    set_u32(&mut bytes, HeaderField::StringsSize, 100);
+    set_u32(&mut bytes, HeaderField::StructureSize, 200);
 
     bytes
   }
 
-  // Helper to write a specific u32 into a byte array at a given offset.
-  fn set_u32(bytes: &mut [u8; HEADER_SIZE], offset: usize, value: u32) {
+  // Helper to write a specific u32 into an FDT header field.
+  fn set_u32(bytes: &mut [u8; HEADER_SIZE], field: HeaderField, value: u32) {
+    let offset = field.offset();
+
     bytes[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
   }
 
@@ -478,7 +533,7 @@ mod tests {
   fn invalid_magic_is_rejected() {
     let mut bytes = valid_header_bytes();
 
-    set_u32(&mut bytes, MAGIC, 0xBAD_CAFE);
+    set_u32(&mut bytes, HeaderField::Magic, 0xBAD_CAFE);
 
     assert_eq!(
       Header::new(&bytes).unwrap_err(),
@@ -490,7 +545,7 @@ mod tests {
   fn total_size_smaller_than_header_is_rejected() {
     let mut bytes = valid_header_bytes();
 
-    set_u32(&mut bytes, TOTAL_SIZE, (HEADER_SIZE - 1) as u32);
+    set_u32(&mut bytes, HeaderField::TotalSize, (HEADER_SIZE - 1) as u32);
 
     assert_eq!(
       Header::new(&bytes).unwrap_err(),
@@ -505,7 +560,7 @@ mod tests {
   fn version_below_supported_version_is_rejected() {
     let mut bytes = valid_header_bytes();
 
-    set_u32(&mut bytes, VERSION, 15);
+    set_u32(&mut bytes, HeaderField::Version, 15);
 
     assert_eq!(
       Header::new(&bytes).unwrap_err(),
@@ -520,7 +575,7 @@ mod tests {
   fn unexpected_last_compatible_version_is_rejected() {
     let mut bytes = valid_header_bytes();
 
-    set_u32(&mut bytes, LAST_COMP_VERSION, 15);
+    set_u32(&mut bytes, HeaderField::LastCompatibleVersion, 15);
 
     assert_eq!(
       Header::new(&bytes).unwrap_err(),
@@ -535,7 +590,7 @@ mod tests {
   fn misaligned_reservation_offset_is_rejected() {
     let mut bytes = valid_header_bytes();
 
-    set_u32(&mut bytes, RESERVATION_OFFSET, 41);
+    set_u32(&mut bytes, HeaderField::ReservationOffset, 41);
 
     assert_eq!(
       Header::new(&bytes).unwrap_err(),
@@ -551,7 +606,7 @@ mod tests {
   fn misaligned_structure_offset_is_rejected() {
     let mut bytes = valid_header_bytes();
 
-    set_u32(&mut bytes, STRUCTURE_OFFSET, 42);
+    set_u32(&mut bytes, HeaderField::StructureOffset, 42);
 
     assert_eq!(
       Header::new(&bytes).unwrap_err(),
@@ -567,7 +622,7 @@ mod tests {
   fn reservation_offset_inside_header_is_rejected() {
     let mut bytes = valid_header_bytes();
 
-    set_u32(&mut bytes, RESERVATION_OFFSET, 24);
+    set_u32(&mut bytes, HeaderField::ReservationOffset, 24);
 
     assert_eq!(
       Header::new(&bytes).unwrap_err(),
@@ -583,7 +638,7 @@ mod tests {
   fn structure_offset_inside_header_is_rejected() {
     let mut bytes = valid_header_bytes();
 
-    set_u32(&mut bytes, STRUCTURE_OFFSET, 36);
+    set_u32(&mut bytes, HeaderField::StructureOffset, 36);
 
     assert_eq!(
       Header::new(&bytes).unwrap_err(),
@@ -599,7 +654,7 @@ mod tests {
   fn strings_offset_inside_header_is_rejected() {
     let mut bytes = valid_header_bytes();
 
-    set_u32(&mut bytes, STRINGS_OFFSET, 24);
+    set_u32(&mut bytes, HeaderField::StringsOffset, 24);
 
     assert_eq!(
       Header::new(&bytes).unwrap_err(),
@@ -615,7 +670,7 @@ mod tests {
   fn reservation_offset_beyond_blob_is_rejected() {
     let mut bytes = valid_header_bytes();
 
-    set_u32(&mut bytes, RESERVATION_OFFSET, 1024 + 8);
+    set_u32(&mut bytes, HeaderField::ReservationOffset, 1024 + 8);
 
     assert_eq!(
       Header::new(&bytes).unwrap_err(),
@@ -631,7 +686,7 @@ mod tests {
   fn strings_block_out_of_bounds_is_rejected() {
     let mut bytes = valid_header_bytes();
 
-    set_u32(&mut bytes, STRINGS_SIZE, 1000);
+    set_u32(&mut bytes, HeaderField::StringsSize, 1000);
 
     assert_eq!(
       Header::new(&bytes).unwrap_err(),
@@ -648,7 +703,7 @@ mod tests {
   fn structure_block_out_of_bounds_is_rejected() {
     let mut bytes = valid_header_bytes();
 
-    set_u32(&mut bytes, STRUCTURE_SIZE, 1000);
+    set_u32(&mut bytes, HeaderField::StructureSize, 1000);
 
     assert_eq!(
       Header::new(&bytes).unwrap_err(),
@@ -665,9 +720,9 @@ mod tests {
   fn overlapping_structure_and_strings_blocks_are_rejected() {
     let mut bytes = valid_header_bytes();
 
-    set_u32(&mut bytes, STRUCTURE_OFFSET, 100);
-    set_u32(&mut bytes, STRUCTURE_SIZE, 100);
-    set_u32(&mut bytes, STRINGS_OFFSET, 150);
+    set_u32(&mut bytes, HeaderField::StructureOffset, 100);
+    set_u32(&mut bytes, HeaderField::StructureSize, 100);
+    set_u32(&mut bytes, HeaderField::StringsOffset, 150);
 
     assert_eq!(
       Header::new(&bytes).unwrap_err(),
@@ -682,9 +737,9 @@ mod tests {
   fn overflow_prone_structure_range_is_rejected() {
     let mut bytes = valid_header_bytes();
 
-    set_u32(&mut bytes, TOTAL_SIZE, u32::MAX);
-    set_u32(&mut bytes, STRUCTURE_OFFSET, u32::MAX - 3);
-    set_u32(&mut bytes, STRUCTURE_SIZE, 8);
+    set_u32(&mut bytes, HeaderField::TotalSize, u32::MAX);
+    set_u32(&mut bytes, HeaderField::StructureOffset, u32::MAX - 3);
+    set_u32(&mut bytes, HeaderField::StructureSize, 8);
 
     assert_eq!(
       Header::new(&bytes).unwrap_err(),
@@ -701,8 +756,8 @@ mod tests {
   fn structure_offset_beyond_blob_is_rejected() {
     let mut bytes = valid_header_bytes();
 
-    set_u32(&mut bytes, STRUCTURE_OFFSET, 1028);
-    set_u32(&mut bytes, STRUCTURE_SIZE, 0);
+    set_u32(&mut bytes, HeaderField::StructureOffset, 1028);
+    set_u32(&mut bytes, HeaderField::StructureSize, 0);
 
     assert_eq!(
       Header::new(&bytes).unwrap_err(),
@@ -716,10 +771,28 @@ mod tests {
   }
 
   #[test]
+  fn block_range_arithmetic_overflow_is_rejected() {
+    let offset = usize::MAX;
+    let size = 1;
+    let total_size = usize::MAX;
+
+    assert_eq!(
+      block_range(BlockKind::Structure, offset, size, total_size),
+      Err(HeaderError::BlockOutOfBounds {
+        block: BlockKind::Structure,
+        offset,
+        size,
+        total_size,
+      })
+    );
+  }
+
+  #[test]
   fn reservation_offset_inside_known_block_is_rejected() {
     for (offset, containing) in [(72, BlockKind::Structure), (520, BlockKind::Strings)] {
       let mut bytes = valid_header_bytes();
-      set_u32(&mut bytes, RESERVATION_OFFSET, offset as u32);
+
+      set_u32(&mut bytes, HeaderField::ReservationOffset, offset as u32);
 
       assert_eq!(
         Header::new(&bytes).unwrap_err(),

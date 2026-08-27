@@ -8,10 +8,10 @@
 
 use core::fmt;
 
-use crate::reader::Reader;
+use crate::{helpers, reader::Reader};
 
 /// Errors produced while validating a property name in the strings block.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum PropertyNameError {
   /// The property-name offset lies outside the strings block.
   OffsetOutOfBounds {
@@ -38,7 +38,8 @@ pub enum PropertyNameError {
     length: usize,
   },
 
-  /// The property name contains a character not permitted by the DTSpec.
+  /// The property name contains a character not permitted by the Devicetree
+  /// Specification.
   InvalidCharacter {
     /// Raw `nameoff` value from the property.
     offset: u32,
@@ -85,7 +86,8 @@ impl<'a> Strings<'a> {
   /// - Begins within the strings block.
   /// - Is terminated by a NUL byte.
   /// - Contains between 1 and 31 bytes.
-  /// - Contains only characters permitted for property names by the DTSpec.
+  /// - Contains only characters permitted for property names by the Devicetree
+  ///   Specification.
   ///
   /// The offset is not required to point immediately after another NUL byte.
   ///
@@ -102,16 +104,16 @@ impl<'a> Strings<'a> {
   /// - [`PropertyNameError::InvalidCharacter`] if the name contains a byte
   ///   outside the permitted character set.
   pub(super) fn validate_property_name(&self, raw_offset: u32) -> Result<(), PropertyNameError> {
-    let offset = raw_offset as usize;
+    let offset = helpers::usize_from_u32(raw_offset);
 
-    if offset >= self.bytes.len() {
+    let Some(bytes) = self.bytes.get(offset..).filter(|bytes| !bytes.is_empty()) else {
       return Err(PropertyNameError::OffsetOutOfBounds {
         offset: raw_offset,
         strings_size: self.bytes.len(),
       });
-    }
+    };
 
-    let mut reader = Reader::new(&self.bytes[offset..]);
+    let mut reader = Reader::new(bytes);
 
     let name = reader
       .read_nul_terminated()
@@ -124,7 +126,7 @@ impl<'a> Strings<'a> {
       });
     }
 
-    if let Some((index, byte)) = name.iter().copied().enumerate().find(|(_, byte)| {
+    if let Some((index, byte)) = name.iter().copied().enumerate().find(|&(_, byte)| {
       !byte.is_ascii_alphanumeric()
         && !matches!(byte, b',' | b'.' | b'_' | b'+' | b'?' | b'#' | b'-')
     }) {

@@ -19,7 +19,7 @@ use crate::{
 };
 
 /// Errors encountered while establishing the byte range occupied by a DTB.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum BlobError {
   /// The supplied DTB pointer is null.
   NullPointer,
@@ -85,11 +85,11 @@ impl<'a> Fdt<'a> {
   ///
   /// # Safety
   ///
-  /// The caller must guarantee that `ptr` is valid for reading at least
-  /// [`HEADER_SIZE`] initialized bytes. If those bytes describe a header that
-  /// is accepted by the parser, the complete byte range declared by that header
-  /// must be initialized, readable, contiguous, contained within one allocation,
-  /// and remain valid and unmodified for `'a`.
+  /// If `ptr` is non-null, the caller must guarantee that it is valid for
+  /// reading at least [`HEADER_SIZE`] initialized bytes. If those bytes describe
+  /// a header accepted by the parser, the complete byte range declared by that
+  /// header must be initialized, readable, contiguous, contained within one
+  /// allocation, and remain valid and unmodified for `'a`.
   ///
   /// # Errors
   ///
@@ -148,7 +148,16 @@ impl<'a> Fdt<'a> {
     //   `'a`.
     let bytes: &'a [u8] = unsafe { slice::from_raw_parts(ptr, total_size) };
 
+    #[expect(
+      clippy::indexing_slicing,
+      reason = "`strings_range` is validated by `Header::new` against `total_size`"
+    )]
     let strings_bytes = &bytes[header.strings_range()];
+
+    #[expect(
+      clippy::indexing_slicing,
+      reason = "`structure_range` is validated by `Header::new` against `total_size`"
+    )]
     let structure_bytes = &bytes[header.structure_range()];
 
     let strings = Strings::new(strings_bytes);
@@ -167,6 +176,14 @@ impl<'a> Fdt<'a> {
       }
     }
 
+    // `reservation_start` is validated to lie within `total_size`. Every
+    // candidate limit is also within `total_size` and is considered only when
+    // greater than `reservation_start`. Therefore, this always forms a valid
+    // slice range.
+    #[expect(
+      clippy::indexing_slicing,
+      reason = "reservation range is bounded by validated header offsets"
+    )]
     let reservation_bytes = &bytes[reservation_start..reservation_limit];
 
     let reservations = Reservations::new(reservation_bytes).map_err(Error::Reservation)?;

@@ -4,7 +4,7 @@
 //! operations for consuming data while advancing that cursor.
 
 /// Errors produced while reading from a bounded byte slice.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum ReadError {
   /// The requested number of bytes was not available.
   Truncated {
@@ -51,8 +51,27 @@ impl<'a> Reader<'a> {
   }
 
   /// Returns the number of unread bytes.
+  #[expect(
+    clippy::arithmetic_side_effects,
+    reason = "`Reader` maintains the invariant that offset never exceeds bytes.len()"
+  )]
   pub(super) const fn remaining(&self) -> usize {
     self.bytes.len() - self.offset
+  }
+
+  /// Reads a `u8`.
+  ///
+  /// # Errors
+  ///
+  /// Returns [`ReadError::Truncated`] if 0 bytes remain.
+  #[expect(
+    clippy::indexing_slicing,
+    reason = "`read_bytes(1)` guarantees exactly one byte is returned"
+  )]
+  pub(super) fn read_u8(&mut self) -> Result<u8, ReadError> {
+    let bytes = self.read_bytes(1)?;
+
+    Ok(bytes[0])
   }
 
   /// Reads a big-endian `u32`.
@@ -60,6 +79,11 @@ impl<'a> Reader<'a> {
   /// # Errors
   ///
   /// Returns [`ReadError::Truncated`] if fewer than 4 bytes remain.
+  #[expect(
+    clippy::expect_used,
+    clippy::missing_panics_doc,
+    reason = "`read_bytes(4)` guarantees the returned slice has exactly four bytes"
+  )]
   pub(super) fn read_u32(&mut self) -> Result<u32, ReadError> {
     let bytes = self.read_bytes(4)?;
 
@@ -73,6 +97,11 @@ impl<'a> Reader<'a> {
   /// # Errors
   ///
   /// Returns [`ReadError::Truncated`] if fewer than 8 bytes remain.
+  #[expect(
+    clippy::expect_used,
+    clippy::missing_panics_doc,
+    reason = "`read_bytes(8)` guarantees the returned slice has exactly eight bytes"
+  )]
   pub(super) fn read_u64(&mut self) -> Result<u64, ReadError> {
     let bytes = self.read_bytes(8)?;
 
@@ -88,22 +117,24 @@ impl<'a> Reader<'a> {
   /// Returns [`ReadError::Truncated`] if `length` exceeds the number of
   /// remaining bytes.
   pub(super) fn read_bytes(&mut self, length: usize) -> Result<&'a [u8], ReadError> {
+    let start = self.offset;
     let remaining = self.remaining();
 
-    if length > remaining {
-      return Err(ReadError::Truncated {
-        offset: self.offset,
-        requested: length,
-        remaining,
-      });
-    }
+    let end = start.checked_add(length).ok_or(ReadError::Truncated {
+      offset: start,
+      requested: length,
+      remaining,
+    })?;
 
-    let start = self.offset;
-    let end = start + length;
+    let bytes = self.bytes.get(start..end).ok_or(ReadError::Truncated {
+      offset: start,
+      requested: length,
+      remaining,
+    })?;
 
     self.offset = end;
 
-    Ok(&self.bytes[start..end])
+    Ok(bytes)
   }
 
   /// Advances the cursor to the next 4-byte boundary.
@@ -115,6 +146,10 @@ impl<'a> Reader<'a> {
   ///
   /// Returns [`ReadError::Truncated`] if the required padding is not available.
   pub(super) fn align_to_4(&mut self) -> Result<&'a [u8], ReadError> {
+    #[expect(
+      clippy::arithmetic_side_effects,
+      reason = "`offset % 4` is at most 3, so `4 - (offset % 4)` cannot underflow"
+    )]
     let padding = (4 - (self.offset % 4)) % 4;
 
     self.read_bytes(padding)
@@ -130,6 +165,11 @@ impl<'a> Reader<'a> {
   /// the remaining bytes.
   pub(super) fn read_nul_terminated(&mut self) -> Result<&'a [u8], ReadError> {
     let start = self.offset;
+
+    #[expect(
+      clippy::indexing_slicing,
+      reason = "`Reader` maintains the invariant that offset never exceeds bytes.len()"
+    )]
     let remaining = &self.bytes[start..];
 
     let length = remaining
@@ -137,10 +177,18 @@ impl<'a> Reader<'a> {
       .position(|&byte| byte == 0)
       .ok_or(ReadError::MissingNulTerminator { offset: start })?;
 
-    let bytes = self
-      .read_bytes(length + 1)
-      .expect("NUL terminator is known to lie within the remaining bytes");
+    #[expect(
+      clippy::arithmetic_side_effects,
+      reason = "`position` found an element within the slice, so length is strictly less than remaining.len()"
+    )]
+    let consumed = length + 1;
 
+    let bytes = self.read_bytes(consumed)?;
+
+    #[expect(
+      clippy::indexing_slicing,
+      reason = "`bytes` contains exactly `length` data bytes followed by the consumed NUL byte"
+    )]
     Ok(&bytes[..length])
   }
 }

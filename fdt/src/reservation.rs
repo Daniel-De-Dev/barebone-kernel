@@ -52,9 +52,13 @@ impl<'a> Reservations<'a> {
       if address == 0 && size == 0 {
         let end = reader.position();
 
-        return Ok(Self {
-          bytes: &bytes[..end],
-        });
+        #[expect(
+          clippy::indexing_slicing,
+          reason = "`Reader` guarantees its position never exceeds the length of its backing slice"
+        )]
+        let bytes = &bytes[..end];
+
+        return Ok(Self { bytes });
       }
     }
   }

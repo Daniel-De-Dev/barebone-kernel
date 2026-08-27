@@ -5,21 +5,22 @@
 //! block. It does not validate higher-level devicetree semantics such as
 //! required properties or relationships between property values.
 //!
-//! DTSpec requires alignment padding bytes to be zero. This parser does not
-//! validate their contents and accepts nonzero padding for compatibility with
-//! DTBs encountered in practice.
+//! Devicetree Specification requires alignment padding bytes to be zero.
+//! This parser does not validate their contents and accepts nonzero padding
+//! for compatibility with DTBs encountered in practice.
 //!
 //! Implementation based on [Devicetree Specification v0.4](https://www.devicetree.org/).
 
 use core::fmt;
 
 use crate::{
+  helpers,
   reader::{ReadError, Reader},
   strings::{PropertyNameError, Strings},
 };
 
 /// Errors produced while validating an FDT node name.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum NodeNameError {
   /// The node-name component is empty or exceeds the maximum permitted length.
   InvalidLength {
@@ -33,7 +34,8 @@ pub enum NodeNameError {
     byte: u8,
   },
 
-  /// The node-name component contains a character not permitted by the DTSpec.
+  /// The node-name component contains a character not permitted by the
+  /// Devicetree Specification.
   InvalidCharacter {
     /// Byte index of the invalid character within the node-name component.
     index: usize,
@@ -45,7 +47,8 @@ pub enum NodeNameError {
   /// A unit-address separator is present without a following unit address.
   EmptyUnitAddress,
 
-  /// The unit-address component contains a character not permitted by the DTSpec.
+  /// The unit-address component contains a character not permitted by the
+  /// Devicetree Specification.
   InvalidUnitAddressCharacter {
     /// Byte index of the invalid character within the unit-address component.
     index: usize,
@@ -56,7 +59,7 @@ pub enum NodeNameError {
 }
 
 /// An error encountered while validating an FDT structure block.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum StructureError {
   /// A bounded read of the structure block failed.
   Read(ReadError),
@@ -215,18 +218,27 @@ impl Token {
   ///
   /// Returns [`StructureError::InvalidToken`] if `value` does not encode a
   /// recognized structure-block token.
-  fn parse(value: u32, offset: usize) -> Result<Self, StructureError> {
-    match value {
-      0x1 => Ok(Self::BeginNode),
-      0x2 => Ok(Self::EndNode),
-      0x3 => Ok(Self::Property),
-      0x4 => Ok(Self::Nop),
-      0x9 => Ok(Self::End),
-      _ => Err(StructureError::InvalidToken { offset, value }),
+  const fn parse(value: u32, offset: usize) -> Result<Self, StructureError> {
+    if value == Self::BeginNode.value() {
+      Ok(Self::BeginNode)
+    } else if value == Self::EndNode.value() {
+      Ok(Self::EndNode)
+    } else if value == Self::Property.value() {
+      Ok(Self::Property)
+    } else if value == Self::Nop.value() {
+      Ok(Self::Nop)
+    } else if value == Self::End.value() {
+      Ok(Self::End)
+    } else {
+      Err(StructureError::InvalidToken { offset, value })
     }
   }
 
   /// Returns the encoded 32-bit value of this token.
+  #[expect(
+    clippy::as_conversions,
+    reason = "`Token` has repr(u32), so conversion yields its encoded discriminant"
+  )]
   const fn value(self) -> u32 {
     self as u32
   }
@@ -244,7 +256,7 @@ enum NodePhase {
 
 /// Returns whether a provided `byte` is permitted in an FDT node-name or
 /// unit-address component after the node name's first character.
-fn is_valid_name_character(byte: u8) -> bool {
+const fn is_valid_name_character(byte: u8) -> bool {
   byte.is_ascii_alphanumeric() || matches!(byte, b',' | b'.' | b'_' | b'+' | b'-')
 }
 
@@ -257,7 +269,7 @@ fn is_valid_name_character(byte: u8) -> bool {
 ///
 /// - Contains between 1 and 31 bytes.
 /// - Begins with an ASCII alphabetic character.
-/// - Contains only characters permitted for node names by the DTSpec.
+/// - Contains only characters permitted for node names by the specification.
 ///
 /// If a unit address is present, it must be nonempty and contain only
 /// characters permitted by the same node-name character set.
@@ -280,30 +292,32 @@ fn is_valid_name_character(byte: u8) -> bool {
 /// - [`NodeNameError::InvalidUnitAddressCharacter`] if the unit-address
 ///   component contains an invalid byte.
 fn validate_node_name(name: &[u8]) -> Result<(), NodeNameError> {
-  let (node_name, unit_address) = if let Some(at) = name.iter().position(|&byte| byte == b'@') {
-    (&name[..at], Some(&name[at + 1..]))
-  } else {
-    (name, None)
+  let mut parts = name.splitn(2, |&byte| byte == b'@');
+
+  let node_name = parts.next().unwrap_or(name);
+  let unit_address = parts.next();
+
+  let Some(&first_byte) = node_name.first() else {
+    return Err(NodeNameError::InvalidLength { length: 0 });
   };
 
-  if !(1..=31).contains(&node_name.len()) {
+  if node_name.len() > 31 {
     return Err(NodeNameError::InvalidLength {
       length: node_name.len(),
     });
   }
 
-  if !node_name[0].is_ascii_alphabetic() {
-    return Err(NodeNameError::InvalidFirstCharacter { byte: node_name[0] });
+  if !first_byte.is_ascii_alphabetic() {
+    return Err(NodeNameError::InvalidFirstCharacter { byte: first_byte });
   }
 
-  if let Some(index) = node_name
+  if let Some((index, byte)) = node_name
     .iter()
-    .position(|&byte| !is_valid_name_character(byte))
+    .copied()
+    .enumerate()
+    .find(|&(_, byte)| !is_valid_name_character(byte))
   {
-    return Err(NodeNameError::InvalidCharacter {
-      index,
-      byte: node_name[index],
-    });
+    return Err(NodeNameError::InvalidCharacter { index, byte });
   }
 
   if let Some(unit_address) = unit_address {
@@ -311,14 +325,13 @@ fn validate_node_name(name: &[u8]) -> Result<(), NodeNameError> {
       return Err(NodeNameError::EmptyUnitAddress);
     }
 
-    if let Some(index) = unit_address
+    if let Some((index, byte)) = unit_address
       .iter()
-      .position(|&byte| !is_valid_name_character(byte))
+      .copied()
+      .enumerate()
+      .find(|&(_, byte)| !is_valid_name_character(byte))
     {
-      return Err(NodeNameError::InvalidUnitAddressCharacter {
-        index,
-        byte: unit_address[index],
-      });
+      return Err(NodeNameError::InvalidUnitAddressCharacter { index, byte });
     }
   }
 
@@ -424,7 +437,7 @@ impl<'a> Structure<'a> {
 
     // The root node has an empty name.
     let root_name_offset = reader.position();
-    let first_byte = reader.read_bytes(1)?[0];
+    let first_byte = reader.read_u8()?;
 
     if first_byte != 0 {
       return Err(StructureError::RootNameNotEmpty {
@@ -440,6 +453,10 @@ impl<'a> Structure<'a> {
       let (token_offset, token) = read_token(&mut reader)?;
 
       match token {
+        #[expect(
+          clippy::arithmetic_side_effects,
+          reason = "each depth increase requires consuming bytes from a slice whose length is bounded by usize::MAX"
+        )]
         Token::BeginNode => {
           let name_offset = reader.position();
           let name =
@@ -464,6 +481,10 @@ impl<'a> Structure<'a> {
           phase = NodePhase::Properties;
         }
 
+        #[expect(
+          clippy::arithmetic_side_effects,
+          reason = "the enclosing loop guarantees depth is greater than zero"
+        )]
         Token::EndNode => {
           depth -= 1;
 
@@ -493,7 +514,7 @@ impl<'a> Structure<'a> {
               source,
             })?;
 
-          reader.read_bytes(length as usize)?;
+          reader.read_bytes(helpers::usize_from_u32(length))?;
 
           // Padding contents are ignored.
           reader.align_to_4()?;
