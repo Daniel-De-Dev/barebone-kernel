@@ -1,10 +1,11 @@
 //! Parsing and validation of the FDT structure block.
 //!
 //! Validation covers token encoding and ordering, node nesting, node names,
-//! referenced property names, uniqueness of property names within each node,
-//! property bounds, and termination of the structure block. It does not
-//! validate higher-level devicetree semantics such as required properties or
-//! relationships between property values.
+//! uniqueness of full node names among siblings, referenced property names,
+//! uniqueness of property names within each node, property bounds, and
+//! termination of the structure block. It does not validate higher-level
+//! devicetree semantics such as required properties or relationships between
+//! property values.
 //!
 //! Devicetree Specification requires alignment padding bytes to be zero.
 //! This parser does not validate their contents and accepts nonzero padding
@@ -101,17 +102,33 @@ pub enum StructureError {
 
   /// A non-root node contains an invalid node name.
   InvalidNodeName {
-    /// Byte offset at which the last token is.
+    /// Byte offset of the node's `FDT_BEGIN_NODE` token.
     token_offset: usize,
 
     /// Byte offset at which the node name begins.
     name_offset: usize,
 
-    /// The current node's depth.
-    depth: usize,
+    /// Tree depth of the parent containing the invalid node.
+    ///
+    /// The root node has depth `1`.
+    parent_dept: usize,
 
     /// Reason the node name is invalid.
     source: NodeNameError,
+  },
+
+  /// A node contains more than one child with the same full node name.
+  DuplicateNodeName {
+    /// Byte offset of the first node token within the structure block.
+    first_node_offset: usize,
+
+    /// Byte offset of the duplicate node token within the structure block.
+    duplicate_node_offset: usize,
+
+    /// Tree depth of the parent containing the duplicate nodes.
+    ///
+    /// The root node has depth `1`.
+    parent_depth: usize,
   },
 
   /// A property appears after a child node within the same parent node.
@@ -149,6 +166,8 @@ pub enum StructureError {
     name_offset: u32,
 
     /// Tree depth at which the duplicate property was encountered.
+    ///
+    /// The root node has depth `1`.
     depth: usize,
   },
 
@@ -158,6 +177,8 @@ pub enum StructureError {
     offset: usize,
 
     /// Number of nodes still open when `FDT_END` was encountered.
+    ///
+    /// The root node has depth `1`.
     depth: usize,
   },
 
@@ -354,6 +375,106 @@ fn validate_node_name(name: &[u8]) -> Result<(), NodeNameError> {
   Ok(())
 }
 
+/// Searches the already validated structure prefix for a prior sibling whose
+/// full node name equals `name`.
+///
+/// `structure_start..node_offset` must contain the already validated portion
+/// of the structure beginning immediately after the root node name.
+///
+/// `parent_depth` is the depth of the parent containing the current node.
+///
+/// Returns the structure-block offset of the matching sibling node token, or
+/// `None` if no sibling with `name` has appeared.
+///
+/// # Errors
+///
+/// Returns [`StructureError::Read`] if the validated prefix cannot be read or
+/// [`StructureError::InvalidToken`] if an invalid token is encountered.
+fn find_prior_sibling_node(
+  bytes: &[u8],
+  structure_start: usize,
+  node_offset: usize,
+  parent_depth: usize,
+  name: &[u8],
+) -> Result<Option<usize>, StructureError> {
+  let mut reader = Reader::new(bytes);
+
+  reader.read_bytes(structure_start)?;
+
+  // The root is already open at `structure_start`.
+  let mut depth = 1usize;
+
+  let mut matching_sibling = None;
+
+  while reader.position() < node_offset {
+    let (token_offset, token) = read_token(&mut reader)?;
+
+    match token {
+      Token::BeginNode => {
+        let node_name = reader.read_nul_terminated()?;
+
+        // Padding contents are ignored.
+        reader.align_to_4()?;
+
+        if depth == parent_depth && node_name == name {
+          matching_sibling = Some(token_offset);
+        }
+
+        #[expect(
+          clippy::arithmetic_side_effects,
+          reason = "the prefix was already structurally validated"
+        )]
+        {
+          depth += 1;
+        }
+
+        // Entering a node whose resulting depth equals `parent_depth`
+        // means that node is a possible parent of the current node.
+        //
+        // Any match belonging to an earlier parent at the same depth
+        // must therefore be discarded.
+        if depth == parent_depth {
+          matching_sibling = None;
+        }
+      }
+
+      #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the prefix was already structurally validated"
+      )]
+      Token::EndNode => {
+        depth -= 1;
+      }
+
+      Token::Property => {
+        let length = reader.read_u32()?;
+
+        // nameoff
+        reader.read_u32()?;
+
+        reader.read_bytes(helpers::usize_from_u32(length))?;
+
+        // Padding contents are ignored.
+        reader.align_to_4()?;
+      }
+
+      Token::Nop => {}
+
+      // `FDT_END` cannot occur in the previously validated prefix. Had the main
+      // parser encountered it, validation would have terminated before reaching
+      // the node whose prior siblings are being searched.
+      Token::End => {
+        return Err(StructureError::PrematureEnd {
+          offset: token_offset,
+          depth,
+        });
+      }
+    }
+  }
+
+  Ok(matching_sibling)
+}
+
 /// Searches an already validated list of properties for `name`.
 ///
 /// `properties_start..properties_end` must describe the portion of the
@@ -511,7 +632,8 @@ impl<'a> Structure<'a> {
   ///
   /// On success, the structure block can be traversed without encountering
   /// malformed tokens, node boundaries, names, property bounds, invalid
-  /// property-name references, or duplicate property names within a node.
+  /// property-name references, duplicate property names within a node or
+  /// duplicate full node names among siblings.
   ///
   /// Padding bytes are consumed to establish alignment, but their contents are
   /// intentionally not validated.
@@ -537,6 +659,8 @@ impl<'a> Structure<'a> {
   ///   terminator.
   /// - [`StructureError::InvalidNodeName`] if a child node name has an invalid
   ///   form.
+  /// - [`StructureError::DuplicateNodeName`] if a child node has the same full
+  ///   name as a different sibling node.
   /// - [`StructureError::PropertyAfterChild`] if a property occurs after a
   ///   child node in the same parent.
   /// - [`StructureError::InvalidPropertyName`] if a property references an
@@ -548,6 +672,10 @@ impl<'a> Structure<'a> {
   /// - [`StructureError::ExpectedEnd`] if a non-NOP token other than `FDT_END`
   ///   follows the closed root node.
   /// - [`StructureError::TrailingData`] if bytes remain after `FDT_END`.
+  #[expect(
+    clippy::too_many_lines,
+    reason = "structure validation is a single state-machine pass whose readability would not improve by splitting it"
+  )]
   pub(super) fn new(bytes: &'a [u8], strings: &Strings<'_>) -> Result<Self, StructureError> {
     let mut reader = Reader::new(bytes);
 
@@ -578,6 +706,7 @@ impl<'a> Structure<'a> {
     // Padding contents are ignored.
     reader.align_to_4()?;
 
+    let root_content_start = reader.position();
     let mut properties_start = reader.position();
 
     while depth > 0 {
@@ -600,12 +729,22 @@ impl<'a> Structure<'a> {
           validate_node_name(name).map_err(|source| StructureError::InvalidNodeName {
             token_offset,
             name_offset,
-            depth,
+            parent_dept: depth,
             source,
           })?;
 
           // Padding contents are ignored.
           reader.align_to_4()?;
+
+          if let Some(first_node_offset) =
+            find_prior_sibling_node(bytes, root_content_start, token_offset, depth, name)?
+          {
+            return Err(StructureError::DuplicateNodeName {
+              first_node_offset,
+              duplicate_node_offset: token_offset,
+              parent_depth: depth,
+            });
+          }
 
           depth += 1;
           phase = NodePhase::Properties;
@@ -1008,10 +1147,138 @@ mod tests {
       StructureError::InvalidNodeName {
         token_offset,
         name_offset,
-        depth: 1,
+        parent_dept: 1,
         source: NodeNameError::InvalidFirstCharacter { byte: b'1' },
       }
     );
+  }
+
+  #[test]
+  fn duplicate_sibling_node_name_is_rejected() {
+    let mut bytes = Vec::new();
+
+    push_begin_node(&mut bytes, b"");
+
+    let first_node_offset = push_begin_node(&mut bytes, b"serial@1000");
+    push_end_node(&mut bytes);
+
+    let duplicate_node_offset = push_begin_node(&mut bytes, b"serial@1000");
+    push_end_node(&mut bytes);
+
+    push_end_node(&mut bytes);
+    push_end(&mut bytes);
+
+    assert_eq!(
+      Structure::new(&bytes, &strings()).unwrap_err(),
+      StructureError::DuplicateNodeName {
+        first_node_offset,
+        duplicate_node_offset,
+        parent_depth: 1,
+      }
+    );
+  }
+
+  #[test]
+  fn same_node_name_under_different_parents_is_valid() {
+    let mut bytes = Vec::new();
+
+    push_begin_node(&mut bytes, b"");
+
+    push_begin_node(&mut bytes, b"first");
+
+    push_begin_node(&mut bytes, b"serial@1000");
+    push_end_node(&mut bytes);
+
+    push_end_node(&mut bytes);
+
+    push_begin_node(&mut bytes, b"second");
+
+    push_begin_node(&mut bytes, b"serial@1000");
+    push_end_node(&mut bytes);
+
+    push_end_node(&mut bytes);
+
+    push_end_node(&mut bytes);
+    push_end(&mut bytes);
+
+    assert!(Structure::new(&bytes, &strings()).is_ok());
+  }
+
+  #[test]
+  fn same_node_name_with_different_unit_addresses_is_valid() {
+    let mut bytes = Vec::new();
+
+    push_begin_node(&mut bytes, b"");
+
+    push_begin_node(&mut bytes, b"serial@1000");
+    push_end_node(&mut bytes);
+
+    push_begin_node(&mut bytes, b"serial@2000");
+    push_end_node(&mut bytes);
+
+    push_end_node(&mut bytes);
+    push_end(&mut bytes);
+
+    assert!(Structure::new(&bytes, &strings()).is_ok());
+  }
+
+  #[test]
+  fn duplicate_node_name_in_nested_parent_is_rejected() {
+    let mut bytes = Vec::new();
+
+    push_begin_node(&mut bytes, b"");
+
+    push_begin_node(&mut bytes, b"soc");
+
+    let first_node_offset = push_begin_node(&mut bytes, b"serial@1000");
+    push_end_node(&mut bytes);
+
+    let duplicate_node_offset = push_begin_node(&mut bytes, b"serial@1000");
+    push_end_node(&mut bytes);
+
+    push_end_node(&mut bytes);
+
+    push_end_node(&mut bytes);
+    push_end(&mut bytes);
+
+    assert_eq!(
+      Structure::new(&bytes, &strings()).unwrap_err(),
+      StructureError::DuplicateNodeName {
+        first_node_offset,
+        duplicate_node_offset,
+        parent_depth: 2,
+      }
+    );
+  }
+
+  #[test]
+  fn same_node_name_at_different_parent_depth_with_nops_is_valid() {
+    let mut bytes = Vec::new();
+
+    push_begin_node(&mut bytes, b"");
+
+    push_begin_node(&mut bytes, b"wrapper");
+
+    push_nop(&mut bytes);
+    push_nop(&mut bytes);
+    push_nop(&mut bytes);
+
+    push_begin_node(&mut bytes, b"serial@1000");
+    push_end_node(&mut bytes);
+
+    push_nop(&mut bytes);
+    push_nop(&mut bytes);
+    push_nop(&mut bytes);
+
+    push_end_node(&mut bytes);
+
+    push_begin_node(&mut bytes, b"serial@1000");
+    push_end_node(&mut bytes);
+
+    push_end_node(&mut bytes);
+    push_end(&mut bytes);
+
+    assert!(Structure::new(&bytes, &strings()).is_ok());
   }
 
   // Property ordering and validation
