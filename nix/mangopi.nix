@@ -13,8 +13,6 @@
       opensbiLib = import ./opensbi.nix { inherit inputs lib pkgs; };
 
       mangoPiDtbName = "mangopi-mq-pro.dtb";
-      # TODO: Look into reserving the memory region for DTB if OpenSBI
-      # doesn't already dynamically (also for vf2)
       mangoPiDtsiName = "barebone-memory.dtsi";
 
       /*
