@@ -31,12 +31,17 @@ extern "C" fn main(hart_id: usize, dtb: usize) -> ! {
 
   logging::info!("kernel entered (hart={}, dtb={:#x})", hart_id, dtb_phys);
 
+  logging::info!("initializing trap handling");
   arch::init_trap();
 
+  let dtb_ptr = core::ptr::with_exposed_provenance::<u8>(dtb_phys.as_usize());
+
   // SAFETY:
-  // Address translation has not been enabled, so the physical DTB address
-  // supplied by the firmware is directly addressable by the kernel.
-  let fdt = unsafe { Fdt::from_ptr(dtb_phys.as_usize() as *const u8) };
+  // Address translation is not enabled, so the firmware-provided physical DTB
+  // address is directly addressable by the kernel. The boot environment
+  // guarantees that it points to a readable, contiguous DTB memory that remains
+  // valid while it is being parsed.
+  let fdt = unsafe { Fdt::from_ptr(dtb_ptr) };
 
   logging::debug!("FDT data structure:\n{:#?}", fdt);
 

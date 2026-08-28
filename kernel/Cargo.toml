@@ -10,3 +10,6 @@ fdt = { path = "../fdt" }
 name = "kernel"
 test = false
 bench = false
+
+[lints]
+workspace = true

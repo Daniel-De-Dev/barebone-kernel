@@ -17,6 +17,8 @@ unfulfilled_lint_expectations = "deny"
 pedantic = { level = "deny", priority = -1 }
 nursery = { level = "deny", priority = -1 }
 
+redundant_pub_crate = "allow"
+
 pattern_type_mismatch = "warn"
 
 unwrap_used = "deny"
@@ -43,3 +45,5 @@ missing_safety_doc = "deny"
 
 allow_attributes = "deny"
 allow_attributes_without_reason = "deny"
+
+trivially_copy_pass_by_ref = "warn"

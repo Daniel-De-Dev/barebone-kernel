@@ -20,6 +20,9 @@ pub(crate) enum WriteByteError {
 
   /// Write to the debug console is not allowed.
   Denied,
+
+  /// The SBI implementation returned an error not expected for this operation.
+  Unexpected(isize),
 }
 
 /// Writes one byte through the SBI debug console.
@@ -29,15 +32,23 @@ pub(crate) enum WriteByteError {
 ///
 /// # Errors
 ///
-/// Returns [`WriteByteError::Denied`] when console output is not permitted,
-/// [`WriteByteError::Failed`] when the write fails.
+/// Returns:
+///
+/// - [`WriteByteError::Denied`] if console output is not permitted.
+/// - [`WriteByteError::Failed`] if the write fails.
+/// - [`WriteByteError::Unexpected`] if the SBI implementation returns an
+///   error not defined for this operation.
 pub(crate) fn write_byte(byte: u8) -> Result<(), WriteByteError> {
   let error: isize;
 
+  // SAFETY: `ecall` invokes the SBI implementation using the standard SBI
+  // calling convention. All argument and return-value registers used by the
+  // call are declared as assembly operands, and the call does not use the
+  // current stack.
   unsafe {
     asm!(
       "ecall",
-      inlateout("a0") byte as usize => error,
+      inlateout("a0") usize::from(byte) => error,
       lateout("a1") _,
       in("a6") DBCN_WRITE_BYTE_FID,
       in("a7") DBCN_EID,
@@ -49,6 +60,6 @@ pub(crate) fn write_byte(byte: u8) -> Result<(), WriteByteError> {
     0 => Ok(()),
     -1 => Err(WriteByteError::Failed),
     -4 => Err(WriteByteError::Denied),
-    error => panic!("unexpected SBI debug console error: {error}"),
+    error => Err(WriteByteError::Unexpected(error)),
   }
 }

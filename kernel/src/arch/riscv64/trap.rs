@@ -40,17 +40,20 @@ unsafe extern "C" {
 ///
 /// This function only installs the trap vector.
 pub(crate) fn init() {
-  let address = __trap_entry as *const () as usize;
+  #[expect(
+    clippy::as_conversions,
+    reason = "the assembly trap-entry symbol must be converted to a code pointer so its address can be written to stvec"
+  )]
+  let address = (__trap_entry as *const ()).addr();
 
   // `stvec.BASE` must be 4-byte aligned, leaving bits [1:0] available
   // for the MODE field.
   debug_assert_eq!(address & 0b11, 0);
 
   // SAFETY:
-  // `address` refers to the statically defined `__trap_entry` routine and
-  // satisfies the alignment requirements of `stvec.BASE`.
-  //
-  // Bits [1:0] are zero, selecting Direct mode.
+  // `__trap_entry` is statically defined with `.align 2`, which guarantees the
+  // 4-byte alignment required by `stvec.BASE`. Its low two address bits are
+  // therefore zero, selecting Direct mode when written to `stvec`.
   unsafe {
     asm!(
       "csrw stvec, {address}",

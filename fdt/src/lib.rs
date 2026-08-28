@@ -14,10 +14,6 @@
 // `cargo clippy --all-targets`
 // also look more into actual u32 bit support?
 
-#![expect(
-  clippy::redundant_pub_crate,
-  reason = "internal types intentionally use restricted visibility inside private modules"
-)]
 #![no_std]
 
 mod error;

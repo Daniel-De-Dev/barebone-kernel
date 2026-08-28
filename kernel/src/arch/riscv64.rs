@@ -76,6 +76,8 @@ _start:
 /// function never returns.
 pub(crate) fn halt() -> ! {
   loop {
+    // SAFETY: `wfi` does not access Rust-managed memory or modify the stack.
+    // Resuming from `wfi` is handled by the enclosing loop.
     unsafe {
       asm!("wfi", options(nomem, nostack));
     }

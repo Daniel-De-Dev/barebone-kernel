@@ -7,6 +7,7 @@ use crate::console::Console;
 use core::fmt::{self, Write};
 
 /// Severity level of a log record.
+#[derive(Clone, Copy)]
 pub(super) enum Level {
   /// Detailed diagnostic information intended for debugging.
   Debug,
@@ -35,12 +36,13 @@ impl fmt::Display for Level {
 }
 
 /// Formats and writes a single log record to the kernel console.
+///
+/// Console output is best-effort. Write failures are ignored because the
+/// logger currently has no independent fallback output path.
 pub(super) fn write(level: Level, file: &str, line: u32, args: fmt::Arguments<'_>) {
   let mut console = Console;
 
-  if writeln!(console, "[{level:<5}] {file:>20}:{line:<3} | {args}").is_err() {
-    todo!("implement emergency output for console write failures");
-  }
+  let _write_result = writeln!(console, "[{level:<5}] {file:>20}:{line:<3} | {args}");
 }
 
 /// Logs diagnostic information intended for debugging.
