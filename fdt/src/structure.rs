@@ -1,9 +1,10 @@
 //! Parsing and validation of the FDT structure block.
 //!
 //! Validation covers token encoding and ordering, node nesting, node names,
-//! referenced property names, property bounds, and termination of the structure
-//! block. It does not validate higher-level devicetree semantics such as
-//! required properties or relationships between property values.
+//! referenced property names, uniqueness of property names within each node,
+//! property bounds, and termination of the structure block. It does not
+//! validate higher-level devicetree semantics such as required properties or
+//! relationships between property values.
 //!
 //! Devicetree Specification requires alignment padding bytes to be zero.
 //! This parser does not validate their contents and accepts nonzero padding
@@ -134,6 +135,21 @@ pub enum StructureError {
 
     /// Reason the referenced property name is invalid.
     source: PropertyNameError,
+  },
+
+  /// A node contains more than one property with the same name.
+  DuplicatePropertyName {
+    /// Byte offset of the first property token within the structure block.
+    first_property_offset: usize,
+
+    /// Byte offset of the duplicate property token within the structure block.
+    duplicate_property_offset: usize,
+
+    /// Raw strings-block offset encoded by the duplicate property.
+    name_offset: u32,
+
+    /// Tree depth at which the duplicate property was encountered.
+    depth: usize,
   },
 
   /// The structure terminates before all open nodes have been closed.
@@ -338,6 +354,117 @@ fn validate_node_name(name: &[u8]) -> Result<(), NodeNameError> {
   Ok(())
 }
 
+/// Searches an already validated list of properties for `name`.
+///
+/// `properties_start..properties_end` must describe the portion of the
+/// current node already consumed while it remained in the properties phase.
+/// Every non-NOP token in the range is a property token.
+///
+/// Returns the structure-block offset of the matching property token, or
+/// `None` if no property with `name` has appeared.
+///
+/// # Errors
+///
+/// Returns [`StructureError::Read`] if the property prefix cannot be read,
+/// [`StructureError::InvalidToken`] if an invalid token is encountered, or
+/// [`StructureError::InvalidPropertyName`] if a property references an invalid
+/// name.
+fn find_property(
+  bytes: &[u8],
+  properties_start: usize,
+  properties_end: usize,
+  name: &[u8],
+  strings: &Strings<'_>,
+) -> Result<Option<usize>, StructureError> {
+  let mut reader = Reader::new(bytes);
+
+  reader.read_bytes(properties_start)?;
+
+  while reader.position() < properties_end {
+    let (token_offset, token) = read_token(&mut reader)?;
+
+    if token == Token::Nop {
+      continue;
+    }
+
+    // `properties_start..properties_end` has already been consumed by
+    // `Structure::new` while the node was in `NodePhase::Properties`.
+    // Therefore, every non-NOP token in this range is FDT_PROP.
+    let length = reader.read_u32()?;
+    let name_offset = reader.read_u32()?;
+
+    // Properties in this prefix have already had their names validated by
+    // `Structure::new`, so this cannot fail if the caller upholds the function's
+    // precondition.
+    let property_name = strings
+      .validate_property_name(name_offset)
+      .map_err(|source| StructureError::InvalidPropertyName {
+        property_offset: token_offset,
+        name_offset,
+        source,
+      })?;
+
+    if property_name == name {
+      return Ok(Some(token_offset));
+    }
+
+    reader.read_bytes(helpers::usize_from_u32(length))?;
+    reader.align_to_4()?;
+  }
+
+  Ok(None)
+}
+
+/// Reads and validates one property from the current node.
+///
+/// The property token itself has already been consumed. `properties_start`
+/// identifies the beginning of the current node's property prefix and
+/// `token_offset` identifies the current property token.
+///
+/// # Errors
+///
+/// Returns [`StructureError::Read`] if the property header, value, or padding
+/// is truncated, [`StructureError::InvalidPropertyName`] if the encoded
+/// property name is invalid, or [`StructureError::DuplicatePropertyName`] if
+/// the current node already contains a property with the same name.
+fn validate_property(
+  reader: &mut Reader<'_>,
+  bytes: &[u8],
+  strings: &Strings<'_>,
+  properties_start: usize,
+  token_offset: usize,
+  depth: usize,
+) -> Result<(), StructureError> {
+  let length = reader.read_u32()?;
+  let name_offset = reader.read_u32()?;
+
+  let name = strings
+    .validate_property_name(name_offset)
+    .map_err(|source| StructureError::InvalidPropertyName {
+      property_offset: token_offset,
+      name_offset,
+      source,
+    })?;
+
+  reader.read_bytes(helpers::usize_from_u32(length))?;
+
+  // Padding contents are ignored.
+  reader.align_to_4()?;
+
+  if let Some(first_property_offset) =
+    find_property(bytes, properties_start, token_offset, name, strings)?
+  {
+    return Err(StructureError::DuplicatePropertyName {
+      first_property_offset,
+      duplicate_property_offset: token_offset,
+      name_offset,
+      depth,
+    });
+  }
+
+  Ok(())
+}
+
 /// Reads and decodes the next structure-block token.
 ///
 /// Returns the byte offset at which the token begins together with its decoded
@@ -383,8 +510,8 @@ impl<'a> Structure<'a> {
   /// validated.
   ///
   /// On success, the structure block can be traversed without encountering
-  /// malformed tokens, node boundaries, names, property bounds, or
-  /// property-name references.
+  /// malformed tokens, node boundaries, names, property bounds, invalid
+  /// property-name references, or duplicate property names within a node.
   ///
   /// Padding bytes are consumed to establish alignment, but their contents are
   /// intentionally not validated.
@@ -414,6 +541,8 @@ impl<'a> Structure<'a> {
   ///   child node in the same parent.
   /// - [`StructureError::InvalidPropertyName`] if a property references an
   ///   invalid name.
+  /// - [`StructureError::DuplicatePropertyName`] if a node contains more than
+  ///   one property with the same name.
   /// - [`StructureError::PrematureEnd`] if `FDT_END` occurs while one or more
   ///   nodes remain open.
   /// - [`StructureError::ExpectedEnd`] if a non-NOP token other than `FDT_END`
@@ -449,6 +578,8 @@ impl<'a> Structure<'a> {
     // Padding contents are ignored.
     reader.align_to_4()?;
 
+    let mut properties_start = reader.position();
+
     while depth > 0 {
       let (token_offset, token) = read_token(&mut reader)?;
 
@@ -477,8 +608,8 @@ impl<'a> Structure<'a> {
           reader.align_to_4()?;
 
           depth += 1;
-
           phase = NodePhase::Properties;
+          properties_start = reader.position();
         }
 
         #[expect(
@@ -503,21 +634,14 @@ impl<'a> Structure<'a> {
             });
           }
 
-          let length = reader.read_u32()?;
-          let name_offset = reader.read_u32()?;
-
-          strings
-            .validate_property_name(name_offset)
-            .map_err(|source| StructureError::InvalidPropertyName {
-              property_offset: token_offset,
-              name_offset,
-              source,
-            })?;
-
-          reader.read_bytes(helpers::usize_from_u32(length))?;
-
-          // Padding contents are ignored.
-          reader.align_to_4()?;
+          validate_property(
+            &mut reader,
+            bytes,
+            strings,
+            properties_start,
+            token_offset,
+            depth,
+          )?;
         }
 
         Token::Nop => {}
@@ -971,6 +1095,132 @@ mod tests {
         requested: 3,
         remaining: 0,
       })
+    );
+  }
+
+  #[test]
+  fn duplicate_property_name_is_rejected() {
+    let mut bytes = Vec::new();
+
+    push_begin_node(&mut bytes, b"");
+
+    let first_property_offset = push_property(&mut bytes, COMPATIBLE_OFFSET, b"first");
+
+    let duplicate_property_offset = push_property(&mut bytes, COMPATIBLE_OFFSET, b"second");
+
+    push_end_node(&mut bytes);
+    push_end(&mut bytes);
+
+    assert_eq!(
+      Structure::new(&bytes, &strings()).unwrap_err(),
+      StructureError::DuplicatePropertyName {
+        first_property_offset,
+        duplicate_property_offset,
+        name_offset: COMPATIBLE_OFFSET,
+        depth: 1,
+      }
+    );
+  }
+
+  #[test]
+  fn same_property_name_in_different_nodes_is_valid() {
+    let mut bytes = Vec::new();
+
+    push_begin_node(&mut bytes, b"");
+
+    push_begin_node(&mut bytes, b"first");
+    push_property(&mut bytes, COMPATIBLE_OFFSET, b"first");
+    push_end_node(&mut bytes);
+
+    push_begin_node(&mut bytes, b"second");
+    push_property(&mut bytes, COMPATIBLE_OFFSET, b"second");
+    push_end_node(&mut bytes);
+
+    push_end_node(&mut bytes);
+    push_end(&mut bytes);
+
+    assert!(Structure::new(&bytes, &strings()).is_ok());
+  }
+
+  #[test]
+  fn duplicate_property_names_at_different_string_offsets_are_rejected() {
+    const DUPLICATE_OFFSET: u32 = 11;
+
+    let strings = Strings::new(b"compatible\0compatible\0");
+
+    let mut bytes = Vec::new();
+
+    push_begin_node(&mut bytes, b"");
+
+    let first_property_offset = push_property(&mut bytes, 0, b"first");
+
+    let duplicate_property_offset = push_property(&mut bytes, DUPLICATE_OFFSET, b"second");
+
+    push_end_node(&mut bytes);
+    push_end(&mut bytes);
+
+    assert_eq!(
+      Structure::new(&bytes, &strings).unwrap_err(),
+      StructureError::DuplicatePropertyName {
+        first_property_offset,
+        duplicate_property_offset,
+        name_offset: DUPLICATE_OFFSET,
+        depth: 1,
+      }
+    );
+  }
+
+  #[test]
+  fn nop_in_property_prefix_is_ignored() {
+    let mut bytes = Vec::new();
+
+    push_begin_node(&mut bytes, b"");
+
+    push_property(&mut bytes, REG_OFFSET, &[0xaa]);
+
+    push_nop(&mut bytes);
+
+    let first_property_offset = push_property(&mut bytes, COMPATIBLE_OFFSET, b"first");
+
+    let duplicate_property_offset = push_property(&mut bytes, COMPATIBLE_OFFSET, b"second");
+
+    push_end_node(&mut bytes);
+    push_end(&mut bytes);
+
+    assert_eq!(
+      Structure::new(&bytes, &strings()).unwrap_err(),
+      StructureError::DuplicatePropertyName {
+        first_property_offset,
+        duplicate_property_offset,
+        name_offset: COMPATIBLE_OFFSET,
+        depth: 1,
+      }
+    );
+  }
+
+  #[test]
+  fn duplicate_property_is_found_after_different_property() {
+    let mut bytes = Vec::new();
+
+    push_begin_node(&mut bytes, b"");
+
+    push_property(&mut bytes, REG_OFFSET, &[0xaa]);
+
+    let first_property_offset = push_property(&mut bytes, COMPATIBLE_OFFSET, b"first");
+
+    let duplicate_property_offset = push_property(&mut bytes, COMPATIBLE_OFFSET, b"second");
+
+    push_end_node(&mut bytes);
+    push_end(&mut bytes);
+
+    assert_eq!(
+      Structure::new(&bytes, &strings()).unwrap_err(),
+      StructureError::DuplicatePropertyName {
+        first_property_offset,
+        duplicate_property_offset,
+        name_offset: COMPATIBLE_OFFSET,
+        depth: 1,
+      }
     );
   }
 

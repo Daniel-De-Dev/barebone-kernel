@@ -81,6 +81,8 @@ impl<'a> Strings<'a> {
 
   /// Validates the property name referenced by `raw_offset`.
   ///
+  /// Returns the validated property-name bytes, excluding the terminating NUL.
+  ///
   /// A valid property name:
   ///
   /// - Begins within the strings block.
@@ -103,7 +105,7 @@ impl<'a> Strings<'a> {
   ///   exceeds 31 bytes.
   /// - [`PropertyNameError::InvalidCharacter`] if the name contains a byte
   ///   outside the permitted character set.
-  pub(super) fn validate_property_name(&self, raw_offset: u32) -> Result<(), PropertyNameError> {
+  pub(super) fn validate_property_name(&self, raw_offset: u32) -> Result<&[u8], PropertyNameError> {
     let offset = helpers::usize_from_u32(raw_offset);
 
     let Some(bytes) = self.bytes.get(offset..).filter(|bytes| !bytes.is_empty()) else {
@@ -137,7 +139,7 @@ impl<'a> Strings<'a> {
       });
     }
 
-    Ok(())
+    Ok(name)
   }
 }
 
