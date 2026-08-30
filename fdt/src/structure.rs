@@ -1,13 +1,14 @@
 //! Parsing and validation of the FDT structure block.
 //!
-//! Validation covers token encoding and ordering, node nesting, node names,
-//! uniqueness of full node names among siblings, referenced property names,
-//! uniqueness of property names within each node, property bounds, and
-//! termination of the structure block. It does not validate higher-level
-//! devicetree semantics such as required properties or relationships between
-//! property values.
+//! This module validates the structure block and establishes the invariants
+//! represented by [`Structure`]. Validation includes both structural
+//! well-formedness and devicetree-wide requirements that apply independently
+//! of any particular device or binding.
 //!
-//! Devicetree Specification requires alignment padding bytes to be zero.
+//! Device-, bus-, and binding-specific semantics, including interpretation of
+//! property values, are outside this module's scope.
+//!
+//! The Devicetree Specification requires alignment padding bytes to be zero.
 //! This parser does not validate their contents and accepts nonzero padding
 //! for compatibility with DTBs encountered in practice.
 //!
@@ -199,6 +200,12 @@ pub enum StructureError {
     /// Number of trailing bytes.
     remaining: usize,
   },
+
+  /// The root node does not contain the required `cpus` child.
+  MissingCpusNode,
+
+  /// The root node contains no child whose node-name component is `memory`.
+  MissingMemoryNode,
 }
 
 impl From<ReadError> for StructureError {
@@ -209,12 +216,18 @@ impl From<ReadError> for StructureError {
 
 /// A validated view of an FDT structure block.
 ///
-/// Instances can only be constructed through [`Structure::new`]. A `Structure`
-/// represents one complete, structurally valid rooted tree and may be traversed
-/// without repeating structural validation.
+/// Instances can only be constructed through [`Structure::new`].
 ///
-/// Structural validity does not imply that the represented devicetree satisfies
-/// semantic requirements for any particular device, bus, or binding.
+/// A `Structure` represents a complete rooted devicetree encoded by a
+/// well-formed structure block. It is unambiguous to traverse and satisfies
+/// the generic devicetree-wide invariants enforced by this parser.
+///
+/// See [`StructureError`] for the conditions rejected while establishing these
+/// guarantees.
+///
+/// This guarantee does not include device-, bus-, or binding-specific
+/// semantics, nor does it imply that property values have been interpreted or
+/// validated according to their bindings.
 pub(super) struct Structure<'a> {
   /// Raw bytes of the validated structure block.
   bytes: &'a [u8],
@@ -295,6 +308,11 @@ enum NodePhase {
 /// unit-address component after the node name's first character.
 const fn is_valid_name_character(byte: u8) -> bool {
   byte.is_ascii_alphanumeric() || matches!(byte, b',' | b'.' | b'_' | b'+' | b'-')
+}
+
+/// Returns the node-name component of a full node name.
+fn node_name_component(name: &[u8]) -> &[u8] {
+  name.split(|&byte| byte == b'@').next().unwrap_or(name)
 }
 
 /// Validates a non-root FDT node name.
@@ -624,54 +642,21 @@ fn read_non_nop_token(reader: &mut Reader<'_>) -> Result<(usize, Token), Structu
 }
 
 impl<'a> Structure<'a> {
-  /// Validates an FDT structure block and constructs a view over its bytes.
+  /// Validates an FDT structure block and constructs a [`Structure`].
   ///
   /// `bytes` must contain exactly one complete structure block. `strings`
-  /// supplies the strings block against which property-name offsets are
-  /// validated.
+  /// supplies the strings block referenced by property-name offsets.
   ///
-  /// On success, the structure block can be traversed without encountering
-  /// malformed tokens, node boundaries, names, property bounds, invalid
-  /// property-name references, duplicate property names within a node or
-  /// duplicate full node names among siblings.
+  /// On success, the returned value satisfies the invariants documented by
+  /// [`Structure`].
   ///
   /// Padding bytes are consumed to establish alignment, but their contents are
   /// intentionally not validated.
   ///
-  /// Validation is structural rather than semantic. A successful result does
-  /// not establish that required properties exist, that property values have
-  /// binding-specific formats, or that relationships between nodes and
-  /// properties are semantically correct.
-  ///
   /// # Errors
   ///
-  /// Returns:
-  ///
-  /// - [`StructureError::Read`] if any required token, field, value, or
-  ///   alignment padding extends beyond the structure block.
-  /// - [`StructureError::InvalidToken`] if an unrecognized token value is
-  ///   encountered.
-  /// - [`StructureError::ExpectedRootNode`] if the first non-NOP token does not
-  ///   begin the root node.
-  /// - [`StructureError::RootNameNotEmpty`] if the root node has a nonempty
-  ///   name.
-  /// - [`StructureError::UnterminatedNodeName`] if a child node name has no NUL
-  ///   terminator.
-  /// - [`StructureError::InvalidNodeName`] if a child node name has an invalid
-  ///   form.
-  /// - [`StructureError::DuplicateNodeName`] if a child node has the same full
-  ///   name as a different sibling node.
-  /// - [`StructureError::PropertyAfterChild`] if a property occurs after a
-  ///   child node in the same parent.
-  /// - [`StructureError::InvalidPropertyName`] if a property references an
-  ///   invalid name.
-  /// - [`StructureError::DuplicatePropertyName`] if a node contains more than
-  ///   one property with the same name.
-  /// - [`StructureError::PrematureEnd`] if `FDT_END` occurs while one or more
-  ///   nodes remain open.
-  /// - [`StructureError::ExpectedEnd`] if a non-NOP token other than `FDT_END`
-  ///   follows the closed root node.
-  /// - [`StructureError::TrailingData`] if bytes remain after `FDT_END`.
+  /// Returns a [`StructureError`] if the structure block does not satisfy the
+  /// requirements necessary to construct a [`Structure`].
   #[expect(
     clippy::too_many_lines,
     reason = "structure validation is a single state-machine pass whose readability would not improve by splitting it"
@@ -709,6 +694,9 @@ impl<'a> Structure<'a> {
     let root_content_start = reader.position();
     let mut properties_start = reader.position();
 
+    let mut cpus_seen = false;
+    let mut memory_seen = false;
+
     while depth > 0 {
       let (token_offset, token) = read_token(&mut reader)?;
 
@@ -732,6 +720,16 @@ impl<'a> Structure<'a> {
             parent_dept: depth,
             source,
           })?;
+
+          if depth == 1 {
+            if name == b"cpus" {
+              cpus_seen = true;
+            }
+
+            if node_name_component(name) == b"memory" {
+              memory_seen = true;
+            }
+          }
 
           // Padding contents are ignored.
           reader.align_to_4()?;
@@ -812,6 +810,14 @@ impl<'a> Structure<'a> {
       });
     }
 
+    if !cpus_seen {
+      return Err(StructureError::MissingCpusNode);
+    }
+
+    if !memory_seen {
+      return Err(StructureError::MissingMemoryNode);
+    }
+
     Ok(Self { bytes })
   }
 }
@@ -881,10 +887,21 @@ mod tests {
     Strings::new(STRINGS)
   }
 
+  fn push_required_root_nodes(bytes: &mut Vec<u8>) {
+    push_begin_node(bytes, b"cpus");
+    push_end_node(bytes);
+
+    push_begin_node(bytes, b"memory@0");
+    push_end_node(bytes);
+  }
+
   fn minimal_structure() -> Vec<u8> {
     let mut bytes = Vec::new();
 
     push_begin_node(&mut bytes, b"");
+
+    push_required_root_nodes(&mut bytes);
+
     push_end_node(&mut bytes);
     push_end(&mut bytes);
 
@@ -896,7 +913,7 @@ mod tests {
     let bytes = minimal_structure();
     let structure = Structure::new(&bytes, &strings()).expect("valid structure should parse");
 
-    assert_eq!(std::format!("{structure:?}"), "Structure { size: 16 }");
+    assert_eq!(std::format!("{structure:?}"), "Structure { size: 52 }");
   }
 
   // Node names
@@ -1025,6 +1042,8 @@ mod tests {
 
     push_property(&mut bytes, COMPATIBLE_OFFSET, b"test,root");
 
+    push_required_root_nodes(&mut bytes);
+
     push_begin_node(&mut bytes, b"soc");
     push_property(&mut bytes, COMPATIBLE_OFFSET, b"simple-bus");
     push_end_node(&mut bytes);
@@ -1044,6 +1063,8 @@ mod tests {
     let mut bytes = Vec::new();
 
     push_begin_node(&mut bytes, b"");
+
+    push_required_root_nodes(&mut bytes);
 
     push_begin_node(&mut bytes, b"first");
     push_end_node(&mut bytes);
@@ -1067,6 +1088,7 @@ mod tests {
 
     push_begin_node(&mut bytes, b"");
     push_nop(&mut bytes);
+    push_required_root_nodes(&mut bytes);
     push_end_node(&mut bytes);
 
     push_nop(&mut bytes);
@@ -1110,6 +1132,92 @@ mod tests {
         offset: name_offset,
         first_byte: b'r',
       }
+    );
+  }
+
+  #[test]
+  fn missing_cpus_node_is_rejected() {
+    let mut bytes = Vec::new();
+
+    push_begin_node(&mut bytes, b"");
+
+    push_begin_node(&mut bytes, b"memory");
+    push_end_node(&mut bytes);
+
+    push_end_node(&mut bytes);
+    push_end(&mut bytes);
+
+    assert_eq!(
+      Structure::new(&bytes, &strings()).unwrap_err(),
+      StructureError::MissingCpusNode
+    );
+  }
+
+  #[test]
+  fn missing_memory_node_is_rejected() {
+    let mut bytes = Vec::new();
+
+    push_begin_node(&mut bytes, b"");
+
+    push_begin_node(&mut bytes, b"cpus");
+    push_end_node(&mut bytes);
+
+    push_end_node(&mut bytes);
+    push_end(&mut bytes);
+
+    assert_eq!(
+      Structure::new(&bytes, &strings()).unwrap_err(),
+      StructureError::MissingMemoryNode
+    );
+  }
+
+  #[test]
+  fn nested_cpus_node_does_not_satisfy_requirement() {
+    let mut bytes = Vec::new();
+
+    push_begin_node(&mut bytes, b"");
+
+    push_begin_node(&mut bytes, b"memory");
+    push_end_node(&mut bytes);
+
+    push_begin_node(&mut bytes, b"container");
+
+    push_begin_node(&mut bytes, b"cpus");
+    push_end_node(&mut bytes);
+
+    push_end_node(&mut bytes);
+
+    push_end_node(&mut bytes);
+    push_end(&mut bytes);
+
+    assert_eq!(
+      Structure::new(&bytes, &strings()).unwrap_err(),
+      StructureError::MissingCpusNode
+    );
+  }
+
+  #[test]
+  fn nested_memory_node_does_not_satisfy_requirement() {
+    let mut bytes = Vec::new();
+
+    push_begin_node(&mut bytes, b"");
+
+    push_begin_node(&mut bytes, b"cpus");
+    push_end_node(&mut bytes);
+
+    push_begin_node(&mut bytes, b"container");
+
+    push_begin_node(&mut bytes, b"memory");
+    push_end_node(&mut bytes);
+
+    push_end_node(&mut bytes);
+
+    push_end_node(&mut bytes);
+    push_end(&mut bytes);
+
+    assert_eq!(
+      Structure::new(&bytes, &strings()).unwrap_err(),
+      StructureError::MissingMemoryNode
     );
   }
 
@@ -1184,6 +1292,8 @@ mod tests {
 
     push_begin_node(&mut bytes, b"");
 
+    push_required_root_nodes(&mut bytes);
+
     push_begin_node(&mut bytes, b"first");
 
     push_begin_node(&mut bytes, b"serial@1000");
@@ -1209,6 +1319,8 @@ mod tests {
     let mut bytes = Vec::new();
 
     push_begin_node(&mut bytes, b"");
+
+    push_required_root_nodes(&mut bytes);
 
     push_begin_node(&mut bytes, b"serial@1000");
     push_end_node(&mut bytes);
@@ -1256,6 +1368,8 @@ mod tests {
     let mut bytes = Vec::new();
 
     push_begin_node(&mut bytes, b"");
+
+    push_required_root_nodes(&mut bytes);
 
     push_begin_node(&mut bytes, b"wrapper");
 
@@ -1394,6 +1508,8 @@ mod tests {
     let mut bytes = Vec::new();
 
     push_begin_node(&mut bytes, b"");
+
+    push_required_root_nodes(&mut bytes);
 
     push_begin_node(&mut bytes, b"first");
     push_property(&mut bytes, COMPATIBLE_OFFSET, b"first");
@@ -1614,6 +1730,7 @@ mod tests {
     let mut bytes = Vec::new();
 
     push_begin_node(&mut bytes, b"");
+    push_required_root_nodes(&mut bytes);
     push_end_node(&mut bytes);
 
     let offset = push_token(&mut bytes, Token::BeginNode);

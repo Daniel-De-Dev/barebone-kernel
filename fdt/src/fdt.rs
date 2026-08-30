@@ -227,24 +227,37 @@ mod tests {
   }
 
   // TODO: Centralize the test DTB layout offsets if this grows further.
-  fn minimal_blob() -> Aligned<72> {
-    let mut bytes = [0; 72];
+  fn minimal_blob() -> Aligned<104> {
+    let mut bytes = [0; 104];
 
     set_u32(&mut bytes, MAGIC, 0xd00d_feed);
-    set_u32(&mut bytes, TOTAL_SIZE, 72);
+    set_u32(&mut bytes, TOTAL_SIZE, 104);
     set_u32(&mut bytes, STRUCTURE_OFFSET, 56);
-    set_u32(&mut bytes, STRINGS_OFFSET, 72);
+    set_u32(&mut bytes, STRINGS_OFFSET, 104);
     set_u32(&mut bytes, RESERVATION_OFFSET, 40);
     set_u32(&mut bytes, VERSION, 17);
     set_u32(&mut bytes, LAST_COMP_VERSION, 16);
     set_u32(&mut bytes, BOOT_CPUID_PHYS, 0);
     set_u32(&mut bytes, STRINGS_SIZE, 0);
-    set_u32(&mut bytes, STRUCTURE_SIZE, 16);
+    set_u32(&mut bytes, STRUCTURE_SIZE, 48);
 
+    // /
     set_u32(&mut bytes, 56, FDT_BEGIN_NODE);
 
-    set_u32(&mut bytes, 64, FDT_END_NODE);
-    set_u32(&mut bytes, 68, FDT_END);
+    // /cpus
+    set_u32(&mut bytes, 64, FDT_BEGIN_NODE);
+    bytes[68..73].copy_from_slice(b"cpus\0");
+    set_u32(&mut bytes, 76, FDT_END_NODE);
+
+    // /memory
+    set_u32(&mut bytes, 80, FDT_BEGIN_NODE);
+    bytes[84..91].copy_from_slice(b"memory\0");
+    set_u32(&mut bytes, 92, FDT_END_NODE);
+
+    // /
+    set_u32(&mut bytes, 96, FDT_END_NODE);
+
+    set_u32(&mut bytes, 100, FDT_END);
 
     Aligned(bytes)
   }
@@ -257,9 +270,9 @@ mod tests {
     // for the returned `Fdt`.
     let fdt = unsafe { Fdt::from_ptr(blob.0.as_ptr()) }.expect("valid DTB should parse");
 
-    assert_eq!(fdt.header.total_size(), 72);
-    assert_eq!(fdt.header.structure_range(), 56..72);
-    assert_eq!(fdt.header.strings_range(), 72..72);
+    assert_eq!(fdt.header.total_size(), 104);
+    assert_eq!(fdt.header.structure_range(), 56..104);
+    assert_eq!(fdt.header.strings_range(), 104..104);
   }
 
   #[test]
