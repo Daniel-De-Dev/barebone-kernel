@@ -112,10 +112,16 @@ pub enum StructureError {
     /// Tree depth of the parent containing the invalid node.
     ///
     /// The root node has depth `1`.
-    parent_dept: usize,
+    parent_depth: usize,
 
     /// Reason the node name is invalid.
     source: NodeNameError,
+  },
+
+  /// A node has a unit-address but does not contain a `reg` property.
+  UnitAddressWithoutReg {
+    /// Byte offset of the node's `FDT_BEGIN_NODE` token.
+    node_offset: usize,
   },
 
   /// A node contains more than one child with the same full node name.
@@ -241,6 +247,23 @@ impl fmt::Debug for Structure<'_> {
   }
 }
 
+#[derive(Clone, Copy)]
+/// Tracks addressing information for the node whose properties may still
+/// appear.
+///
+/// The state is finalized when the node ends or when its first child begins,
+/// since properties are forbidden after children.
+struct NodeAddressState<'a> {
+  /// Byte offset of the node's `FDT_BEGIN_NODE` token.
+  node_offset: usize,
+
+  /// Unit-address component from the node name, if present.
+  unit_address: Option<&'a [u8]>,
+
+  /// Value of the node's `reg` property, if encountered.
+  reg: Option<&'a [u8]>,
+}
+
 /// Token values encoded in an FDT structure block.
 #[repr(u32)]
 #[derive(PartialEq)]
@@ -315,6 +338,11 @@ fn node_name_component(name: &[u8]) -> &[u8] {
   name.split(|&byte| byte == b'@').next().unwrap_or(name)
 }
 
+/// Returns the unit-address component of a full node name.
+fn unit_address_component(name: &[u8]) -> Option<&[u8]> {
+  name.splitn(2, |&byte| byte == b'@').nth(1)
+}
+
 /// Validates a non-root FDT node name.
 ///
 /// A node name may consist of a node-name component alone or a node-name
@@ -347,10 +375,8 @@ fn node_name_component(name: &[u8]) -> &[u8] {
 /// - [`NodeNameError::InvalidUnitAddressCharacter`] if the unit-address
 ///   component contains an invalid byte.
 fn validate_node_name(name: &[u8]) -> Result<(), NodeNameError> {
-  let mut parts = name.splitn(2, |&byte| byte == b'@');
-
-  let node_name = parts.next().unwrap_or(name);
-  let unit_address = parts.next();
+  let node_name = node_name_component(name);
+  let unit_address = unit_address_component(name);
 
   let Some(&first_byte) = node_name.first() else {
     return Err(NodeNameError::InvalidLength { length: 0 });
@@ -560,20 +586,23 @@ fn find_property(
 /// identifies the beginning of the current node's property prefix and
 /// `token_offset` identifies the current property token.
 ///
+/// Returns the property's value bytes if the property is `reg`, otherwise
+/// `None`.
+///
 /// # Errors
 ///
 /// Returns [`StructureError::Read`] if the property header, value, or padding
 /// is truncated, [`StructureError::InvalidPropertyName`] if the encoded
 /// property name is invalid, or [`StructureError::DuplicatePropertyName`] if
 /// the current node already contains a property with the same name.
-fn validate_property(
-  reader: &mut Reader<'_>,
-  bytes: &[u8],
+fn validate_property<'a>(
+  reader: &mut Reader<'a>,
+  bytes: &'a [u8],
   strings: &Strings<'_>,
   properties_start: usize,
   token_offset: usize,
   depth: usize,
-) -> Result<(), StructureError> {
+) -> Result<Option<&'a [u8]>, StructureError> {
   let length = reader.read_u32()?;
   let name_offset = reader.read_u32()?;
 
@@ -585,7 +614,7 @@ fn validate_property(
       source,
     })?;
 
-  reader.read_bytes(helpers::usize_from_u32(length))?;
+  let value = reader.read_bytes(helpers::usize_from_u32(length))?;
 
   // Padding contents are ignored.
   reader.align_to_4()?;
@@ -598,6 +627,26 @@ fn validate_property(
       duplicate_property_offset: token_offset,
       name_offset,
       depth,
+    });
+  }
+
+  if name == b"reg" {
+    Ok(Some(value))
+  } else {
+    Ok(None)
+  }
+}
+
+/// Validates that a node with a unit-address contains a `reg` property.
+///
+/// # Errors
+///
+/// Returns [`StructureError::UnitAddressWithoutReg`] if the node has a
+/// unit-address but no `reg` property.
+const fn validate_node_addressing(state: NodeAddressState<'_>) -> Result<(), StructureError> {
+  if state.unit_address.is_some() && state.reg.is_none() {
+    return Err(StructureError::UnitAddressWithoutReg {
+      node_offset: state.node_offset,
     });
   }
 
@@ -697,6 +746,8 @@ impl<'a> Structure<'a> {
     let mut cpus_seen = false;
     let mut memory_seen = false;
 
+    let mut node_address_state: Option<NodeAddressState> = None;
+
     while depth > 0 {
       let (token_offset, token) = read_token(&mut reader)?;
 
@@ -717,19 +768,9 @@ impl<'a> Structure<'a> {
           validate_node_name(name).map_err(|source| StructureError::InvalidNodeName {
             token_offset,
             name_offset,
-            parent_dept: depth,
+            parent_depth: depth,
             source,
           })?;
-
-          if depth == 1 {
-            if name == b"cpus" {
-              cpus_seen = true;
-            }
-
-            if node_name_component(name) == b"memory" {
-              memory_seen = true;
-            }
-          }
 
           // Padding contents are ignored.
           reader.align_to_4()?;
@@ -744,6 +785,28 @@ impl<'a> Structure<'a> {
             });
           }
 
+          // The current parent's property list is now complete because its
+          // child is beginning.
+          if let Some(state) = node_address_state.take() {
+            validate_node_addressing(state)?;
+          }
+
+          node_address_state = Some(NodeAddressState {
+            node_offset: token_offset,
+            unit_address: unit_address_component(name),
+            reg: None,
+          });
+
+          if depth == 1 {
+            if name == b"cpus" {
+              cpus_seen = true;
+            }
+
+            if node_name_component(name) == b"memory" {
+              memory_seen = true;
+            }
+          }
+
           depth += 1;
           phase = NodePhase::Properties;
           properties_start = reader.position();
@@ -754,6 +817,10 @@ impl<'a> Structure<'a> {
           reason = "the enclosing loop guarantees depth is greater than zero"
         )]
         Token::EndNode => {
+          if let Some(state) = node_address_state.take() {
+            validate_node_addressing(state)?;
+          }
+
           depth -= 1;
 
           if depth > 0 {
@@ -771,7 +838,7 @@ impl<'a> Structure<'a> {
             });
           }
 
-          validate_property(
+          let reg = validate_property(
             &mut reader,
             bytes,
             strings,
@@ -779,6 +846,10 @@ impl<'a> Structure<'a> {
             token_offset,
             depth,
           )?;
+
+          if let (Some(state), Some(reg)) = (&mut node_address_state, reg) {
+            state.reg = Some(reg);
+          }
         }
 
         Token::Nop => {}
@@ -892,6 +963,7 @@ mod tests {
     push_end_node(bytes);
 
     push_begin_node(bytes, b"memory@0");
+    push_property(bytes, REG_OFFSET, b"0");
     push_end_node(bytes);
   }
 
@@ -913,7 +985,7 @@ mod tests {
     let bytes = minimal_structure();
     let structure = Structure::new(&bytes, &strings()).expect("valid structure should parse");
 
-    assert_eq!(std::format!("{structure:?}"), "Structure { size: 52 }");
+    assert_eq!(std::format!("{structure:?}"), "Structure { size: 68 }");
   }
 
   // Node names
@@ -1255,7 +1327,7 @@ mod tests {
       StructureError::InvalidNodeName {
         token_offset,
         name_offset,
-        parent_dept: 1,
+        parent_depth: 1,
         source: NodeNameError::InvalidFirstCharacter { byte: b'1' },
       }
     );
@@ -1268,9 +1340,11 @@ mod tests {
     push_begin_node(&mut bytes, b"");
 
     let first_node_offset = push_begin_node(&mut bytes, b"serial@1000");
+    push_property(&mut bytes, REG_OFFSET, b"1000");
     push_end_node(&mut bytes);
 
     let duplicate_node_offset = push_begin_node(&mut bytes, b"serial@1000");
+    push_property(&mut bytes, REG_OFFSET, b"1000");
     push_end_node(&mut bytes);
 
     push_end_node(&mut bytes);
@@ -1297,6 +1371,7 @@ mod tests {
     push_begin_node(&mut bytes, b"first");
 
     push_begin_node(&mut bytes, b"serial@1000");
+    push_property(&mut bytes, REG_OFFSET, b"1000");
     push_end_node(&mut bytes);
 
     push_end_node(&mut bytes);
@@ -1304,6 +1379,7 @@ mod tests {
     push_begin_node(&mut bytes, b"second");
 
     push_begin_node(&mut bytes, b"serial@1000");
+    push_property(&mut bytes, REG_OFFSET, b"1000");
     push_end_node(&mut bytes);
 
     push_end_node(&mut bytes);
@@ -1323,9 +1399,11 @@ mod tests {
     push_required_root_nodes(&mut bytes);
 
     push_begin_node(&mut bytes, b"serial@1000");
+    push_property(&mut bytes, REG_OFFSET, b"1000");
     push_end_node(&mut bytes);
 
     push_begin_node(&mut bytes, b"serial@2000");
+    push_property(&mut bytes, REG_OFFSET, b"2000");
     push_end_node(&mut bytes);
 
     push_end_node(&mut bytes);
@@ -1343,9 +1421,11 @@ mod tests {
     push_begin_node(&mut bytes, b"soc");
 
     let first_node_offset = push_begin_node(&mut bytes, b"serial@1000");
+    push_property(&mut bytes, REG_OFFSET, b"1000");
     push_end_node(&mut bytes);
 
     let duplicate_node_offset = push_begin_node(&mut bytes, b"serial@1000");
+    push_property(&mut bytes, REG_OFFSET, b"1000");
     push_end_node(&mut bytes);
 
     push_end_node(&mut bytes);
@@ -1378,6 +1458,7 @@ mod tests {
     push_nop(&mut bytes);
 
     push_begin_node(&mut bytes, b"serial@1000");
+    push_property(&mut bytes, REG_OFFSET, b"1000");
     push_end_node(&mut bytes);
 
     push_nop(&mut bytes);
@@ -1387,12 +1468,55 @@ mod tests {
     push_end_node(&mut bytes);
 
     push_begin_node(&mut bytes, b"serial@1000");
+    push_property(&mut bytes, REG_OFFSET, b"1000");
     push_end_node(&mut bytes);
 
     push_end_node(&mut bytes);
     push_end(&mut bytes);
 
     assert!(Structure::new(&bytes, &strings()).is_ok());
+  }
+
+  #[test]
+  fn unit_address_without_reg_is_rejected() {
+    let mut bytes = Vec::new();
+
+    push_begin_node(&mut bytes, b"");
+    push_required_root_nodes(&mut bytes);
+
+    let node_offset = push_begin_node(&mut bytes, b"serial@1000");
+    push_end_node(&mut bytes);
+
+    push_end_node(&mut bytes);
+    push_end(&mut bytes);
+
+    assert_eq!(
+      Structure::new(&bytes, &strings()).unwrap_err(),
+      StructureError::UnitAddressWithoutReg { node_offset }
+    );
+  }
+
+  #[test]
+  fn parent_unit_address_without_reg_is_rejected_when_child_begins() {
+    let mut bytes = Vec::new();
+
+    push_begin_node(&mut bytes, b"");
+    push_required_root_nodes(&mut bytes);
+
+    let node_offset = push_begin_node(&mut bytes, b"bus@1000");
+
+    push_begin_node(&mut bytes, b"child");
+    push_end_node(&mut bytes);
+
+    push_end_node(&mut bytes);
+
+    push_end_node(&mut bytes);
+    push_end(&mut bytes);
+
+    assert_eq!(
+      Structure::new(&bytes, &strings()).unwrap_err(),
+      StructureError::UnitAddressWithoutReg { node_offset }
+    );
   }
 
   // Property ordering and validation
