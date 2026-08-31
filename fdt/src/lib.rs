@@ -30,7 +30,7 @@ pub use fdt::{BlobError, Fdt};
 pub use header::{BlockKind, HeaderError};
 pub use reader::ReadError;
 pub use strings::PropertyNameError;
-pub use structure::{NodeNameError, StructureError};
+pub use structure::{Children, Node, NodeNameError, Properties, Property, StructureError};
 
 #[cfg(target_pointer_width = "16")]
 compile_error!("the fdt crate requires a target pointer width of at least 32 bits");

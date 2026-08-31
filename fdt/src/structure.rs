@@ -14,6 +14,9 @@
 //!
 //! Implementation based on [Devicetree Specification v0.4](https://www.devicetree.org/).
 
+mod name;
+mod view;
+
 use core::fmt;
 
 use crate::{
@@ -22,44 +25,10 @@ use crate::{
   strings::{PropertyNameError, Strings},
 };
 
-/// Errors produced while validating an FDT node name.
-#[derive(Debug, PartialEq, Eq)]
-pub enum NodeNameError {
-  /// The node-name component is empty or exceeds the maximum permitted length.
-  InvalidLength {
-    /// Length of the node-name component in bytes.
-    length: usize,
-  },
+use name::{component, unit_address, validate};
 
-  /// The node-name component does not begin with an alphabetic character.
-  InvalidFirstCharacter {
-    /// Invalid first byte.
-    byte: u8,
-  },
-
-  /// The node-name component contains a character not permitted by the
-  /// Devicetree Specification.
-  InvalidCharacter {
-    /// Byte index of the invalid character within the node-name component.
-    index: usize,
-
-    /// Invalid byte.
-    byte: u8,
-  },
-
-  /// A unit-address separator is present without a following unit address.
-  EmptyUnitAddress,
-
-  /// The unit-address component contains a character not permitted by the
-  /// Devicetree Specification.
-  InvalidUnitAddressCharacter {
-    /// Byte index of the invalid character within the unit-address component.
-    index: usize,
-
-    /// Invalid byte.
-    byte: u8,
-  },
-}
+pub use name::NodeNameError;
+pub use view::{Children, Node, Properties, Property};
 
 /// An error encountered while validating an FDT structure block.
 #[derive(Debug, PartialEq, Eq)]
@@ -327,98 +296,6 @@ enum NodePhase {
   Children,
 }
 
-/// Returns whether a provided `byte` is permitted in an FDT node-name or
-/// unit-address component after the node name's first character.
-const fn is_valid_name_character(byte: u8) -> bool {
-  byte.is_ascii_alphanumeric() || matches!(byte, b',' | b'.' | b'_' | b'+' | b'-')
-}
-
-/// Returns the node-name component of a full node name.
-fn node_name_component(name: &[u8]) -> &[u8] {
-  name.split(|&byte| byte == b'@').next().unwrap_or(name)
-}
-
-/// Returns the unit-address component of a full node name.
-fn unit_address_component(name: &[u8]) -> Option<&[u8]> {
-  name.splitn(2, |&byte| byte == b'@').nth(1)
-}
-
-/// Validates a non-root FDT node name.
-///
-/// A node name may consist of a node-name component alone or a node-name
-/// component followed by `@` and a unit-address component.
-///
-/// The node-name component:
-///
-/// - Contains between 1 and 31 bytes.
-/// - Begins with an ASCII alphabetic character.
-/// - Contains only characters permitted for node names by the specification.
-///
-/// If a unit address is present, it must be nonempty and contain only
-/// characters permitted by the same node-name character set.
-///
-/// This function validates only the textual form of the unit address. It does
-/// not interpret the address or compare it with any property value.
-///
-/// # Errors
-///
-/// Returns:
-///
-/// - [`NodeNameError::InvalidLength`] if the node-name component is empty or
-///   exceeds 31 bytes.
-/// - [`NodeNameError::InvalidFirstCharacter`] if the node-name component does
-///   not begin with an ASCII alphabetic character.
-/// - [`NodeNameError::InvalidCharacter`] if the node-name component contains an
-///   invalid byte.
-/// - [`NodeNameError::EmptyUnitAddress`] if `@` is present without a following
-///   unit address.
-/// - [`NodeNameError::InvalidUnitAddressCharacter`] if the unit-address
-///   component contains an invalid byte.
-fn validate_node_name(name: &[u8]) -> Result<(), NodeNameError> {
-  let node_name = node_name_component(name);
-  let unit_address = unit_address_component(name);
-
-  let Some(&first_byte) = node_name.first() else {
-    return Err(NodeNameError::InvalidLength { length: 0 });
-  };
-
-  if node_name.len() > 31 {
-    return Err(NodeNameError::InvalidLength {
-      length: node_name.len(),
-    });
-  }
-
-  if !first_byte.is_ascii_alphabetic() {
-    return Err(NodeNameError::InvalidFirstCharacter { byte: first_byte });
-  }
-
-  if let Some((index, byte)) = node_name
-    .iter()
-    .copied()
-    .enumerate()
-    .find(|&(_, byte)| !is_valid_name_character(byte))
-  {
-    return Err(NodeNameError::InvalidCharacter { index, byte });
-  }
-
-  if let Some(unit_address) = unit_address {
-    if unit_address.is_empty() {
-      return Err(NodeNameError::EmptyUnitAddress);
-    }
-
-    if let Some((index, byte)) = unit_address
-      .iter()
-      .copied()
-      .enumerate()
-      .find(|&(_, byte)| !is_valid_name_character(byte))
-    {
-      return Err(NodeNameError::InvalidUnitAddressCharacter { index, byte });
-    }
-  }
-
-  Ok(())
-}
-
 /// Searches the already validated structure prefix for a prior sibling whose
 /// full node name equals `name`.
 ///
@@ -653,6 +530,8 @@ const fn validate_node_addressing(state: NodeAddressState<'_>) -> Result<(), Str
   Ok(())
 }
 
+// TODO: Once some validation logic move out of lower level validation
+// see if function can only return byte and not offset
 /// Reads and decodes the next structure-block token.
 ///
 /// Returns the byte offset at which the token begins together with its decoded
@@ -765,7 +644,7 @@ impl<'a> Structure<'a> {
                 offset: name_offset,
               })?;
 
-          validate_node_name(name).map_err(|source| StructureError::InvalidNodeName {
+          validate(name).map_err(|source| StructureError::InvalidNodeName {
             token_offset,
             name_offset,
             parent_depth: depth,
@@ -793,16 +672,19 @@ impl<'a> Structure<'a> {
 
           node_address_state = Some(NodeAddressState {
             node_offset: token_offset,
-            unit_address: unit_address_component(name),
+            unit_address: unit_address(name),
             reg: None,
           });
 
           if depth == 1 {
+            // TODO: Reconsider if these checks can be done after tree's
+            // structure is validated and the higher level view.rs API can be
+            // used
             if name == b"cpus" {
               cpus_seen = true;
             }
 
-            if node_name_component(name) == b"memory" {
+            if component(name) == b"memory" {
               memory_seen = true;
             }
           }
@@ -894,78 +776,17 @@ impl<'a> Structure<'a> {
 }
 
 #[cfg(test)]
+mod test_utils;
+
+#[cfg(test)]
 mod tests {
   use super::*;
+  use crate::structure::test_utils::*;
 
   extern crate std;
   use std::vec::Vec;
 
   const COMPATIBLE_OFFSET: u32 = 0;
-  const REG_OFFSET: u32 = 11;
-
-  const STRINGS: &[u8] = b"compatible\0reg\0";
-
-  fn push_u32(bytes: &mut Vec<u8>, value: u32) {
-    bytes.extend_from_slice(&value.to_be_bytes());
-  }
-
-  fn push_token(bytes: &mut Vec<u8>, token: Token) -> usize {
-    let offset = bytes.len();
-    push_u32(bytes, token.value());
-    offset
-  }
-
-  fn pad_to_4(bytes: &mut Vec<u8>) {
-    while bytes.len() % 4 != 0 {
-      bytes.push(0);
-    }
-  }
-
-  fn push_begin_node(bytes: &mut Vec<u8>, name: &[u8]) -> usize {
-    let offset = push_token(bytes, Token::BeginNode);
-
-    bytes.extend_from_slice(name);
-    bytes.push(0);
-    pad_to_4(bytes);
-
-    offset
-  }
-
-  fn push_end_node(bytes: &mut Vec<u8>) -> usize {
-    push_token(bytes, Token::EndNode)
-  }
-
-  fn push_property(bytes: &mut Vec<u8>, name_offset: u32, value: &[u8]) -> usize {
-    let offset = push_token(bytes, Token::Property);
-
-    push_u32(bytes, value.len() as u32);
-    push_u32(bytes, name_offset);
-    bytes.extend_from_slice(value);
-    pad_to_4(bytes);
-
-    offset
-  }
-
-  fn push_nop(bytes: &mut Vec<u8>) -> usize {
-    push_token(bytes, Token::Nop)
-  }
-
-  fn push_end(bytes: &mut Vec<u8>) -> usize {
-    push_token(bytes, Token::End)
-  }
-
-  fn strings() -> Strings<'static> {
-    Strings::new(STRINGS)
-  }
-
-  fn push_required_root_nodes(bytes: &mut Vec<u8>) {
-    push_begin_node(bytes, b"cpus");
-    push_end_node(bytes);
-
-    push_begin_node(bytes, b"memory@0");
-    push_property(bytes, REG_OFFSET, b"0");
-    push_end_node(bytes);
-  }
 
   fn minimal_structure() -> Vec<u8> {
     let mut bytes = Vec::new();
@@ -989,19 +810,6 @@ mod tests {
   }
 
   // Node names
-  #[test]
-  fn valid_node_names_are_accepted() {
-    for name in [
-      b"a".as_slice(),
-      b"soc".as_slice(),
-      b"serial@1000".as_slice(),
-      b"vendor,device".as_slice(),
-      b"a.b_c+d-0".as_slice(),
-    ] {
-      assert_eq!(validate_node_name(name), Ok(()));
-    }
-  }
-
   #[test]
   fn empty_structure_block_is_rejected() {
     let bytes = [];
@@ -1045,62 +853,6 @@ mod tests {
         offset: 5,
         requested: 3,
         remaining: 0,
-      })
-    );
-  }
-
-  #[test]
-  fn empty_node_name_is_rejected() {
-    assert_eq!(
-      validate_node_name(b""),
-      Err(NodeNameError::InvalidLength { length: 0 })
-    );
-  }
-
-  #[test]
-  fn node_name_longer_than_31_bytes_is_rejected() {
-    let name = [b'a'; 32];
-
-    assert_eq!(
-      validate_node_name(&name),
-      Err(NodeNameError::InvalidLength { length: 32 })
-    );
-  }
-
-  #[test]
-  fn node_name_must_begin_with_alphabetic_character() {
-    assert_eq!(
-      validate_node_name(b"1node"),
-      Err(NodeNameError::InvalidFirstCharacter { byte: b'1' })
-    );
-  }
-
-  #[test]
-  fn invalid_node_name_character_is_rejected() {
-    assert_eq!(
-      validate_node_name(b"no?de"),
-      Err(NodeNameError::InvalidCharacter {
-        index: 2,
-        byte: b'?',
-      })
-    );
-  }
-
-  #[test]
-  fn empty_unit_address_is_rejected() {
-    assert_eq!(
-      validate_node_name(b"serial@"),
-      Err(NodeNameError::EmptyUnitAddress)
-    );
-  }
-
-  #[test]
-  fn invalid_unit_address_character_is_rejected() {
-    assert_eq!(
-      validate_node_name(b"serial@10?0"),
-      Err(NodeNameError::InvalidUnitAddressCharacter {
-        index: 2,
-        byte: b'?',
       })
     );
   }

@@ -15,7 +15,7 @@ use crate::{
   header::{HEADER_SIZE, Header},
   reservation::Reservations,
   strings::Strings,
-  structure::Structure,
+  structure::{Node, Structure},
 };
 
 /// Errors encountered while establishing the byte range occupied by a DTB.
@@ -194,6 +194,12 @@ impl<'a> Fdt<'a> {
       strings,
       reservations,
     })
+  }
+
+  /// Returns the root node of the devicetree.
+  #[must_use]
+  pub fn root(&self) -> Node<'a> {
+    self.structure.root(self.strings)
   }
 }
 

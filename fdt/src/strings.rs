@@ -58,6 +58,7 @@ pub enum PropertyNameError {
 /// `Strings` does not imply that the entire block has been validated.
 /// Property-name offsets must be validated individually through
 /// [`Strings::validate_property_name`] before relying on the referenced name.
+#[derive(Clone, Copy)]
 pub(super) struct Strings<'a> {
   /// Raw bytes of the FDT strings block.
   bytes: &'a [u8],
@@ -105,7 +106,10 @@ impl<'a> Strings<'a> {
   ///   exceeds 31 bytes.
   /// - [`PropertyNameError::InvalidCharacter`] if the name contains a byte
   ///   outside the permitted character set.
-  pub(super) fn validate_property_name(&self, raw_offset: u32) -> Result<&[u8], PropertyNameError> {
+  pub(super) fn validate_property_name(
+    &self,
+    raw_offset: u32,
+  ) -> Result<&'a [u8], PropertyNameError> {
     let offset = helpers::usize_from_u32(raw_offset);
 
     let Some(bytes) = self.bytes.get(offset..).filter(|bytes| !bytes.is_empty()) else {

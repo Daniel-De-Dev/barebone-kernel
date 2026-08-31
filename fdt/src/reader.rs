@@ -191,6 +191,15 @@ impl<'a> Reader<'a> {
     )]
     Ok(&bytes[..length])
   }
+
+  /// Returns all unread bytes without advancing the cursor.
+  pub(super) fn remaining_bytes(&self) -> &'a [u8] {
+    #[expect(
+      clippy::indexing_slicing,
+      reason = "Reader maintains the invariant that offset never exceeds bytes.len()"
+    )]
+    &self.bytes[self.offset..]
+  }
 }
 
 #[cfg(test)]
@@ -432,5 +441,22 @@ mod tests {
     assert_eq!(reader.read_nul_terminated(), Ok(b"abc".as_slice()));
     assert_eq!(reader.position(), data.len());
     assert_eq!(reader.remaining(), 0);
+  }
+
+  #[test]
+  fn remaining_bytes_returns_unread_suffix_without_advancing() {
+    let data = [1, 2, 3, 4, 5];
+    let mut reader = Reader::new(&data);
+
+    assert_eq!(reader.remaining_bytes(), &[1, 2, 3, 4, 5]);
+
+    assert_eq!(reader.read_bytes(2), Ok(&[1, 2][..]));
+
+    assert_eq!(reader.remaining_bytes(), &[3, 4, 5]);
+    assert_eq!(reader.remaining_bytes(), &[3, 4, 5]);
+
+    assert_eq!(reader.read_bytes(3), Ok(&[3, 4, 5][..]));
+
+    assert_eq!(reader.remaining_bytes(), &[]);
   }
 }
