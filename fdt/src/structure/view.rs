@@ -1,27 +1,16 @@
 //! Read-only navigation over a validated FDT structure block.
 //!
-//! This module is the post-validation interface to [`Structure`].
-//!
-//! [`Node`], [`Property`], [`Children`], and [`Properties`] can only originate
-//! from a [`Structure`] that has successfully passed [`Structure::new`].
-//! The structure grammar, token encoding, node names, property boundaries,
-//! property names, nesting, and required alignment have already been validated
-//! before these views are created.
-//!
-//! The underlying DTB is also immutable for the lifetime of these views.
-//!
-//! Internal traversal therefore treats failures of bounded reads as invariant
-//! violations in the view implementation rather than as recoverable malformed
-//! input. [`ValidatedReader`] centralizes that assumption.
-//!
-//! This module must not expose constructors that permit views to be created
-//! directly from arbitrary byte slices.
+//! The views in this module operate on structure blocks that have passed
+//! [`Structure::new`]. Traversal therefore relies on the representation-level
+//! invariants established there and treats violations of those invariants as
+//! internal errors rather than malformed input.
 
-use crate::{
-  helpers::usize_from_u32,
-  reader::Reader,
-  strings::Strings,
-  structure::{Structure, Token, component, read_token, unit_address},
+use crate::{helpers::usize_from_u32, reader::Reader, strings::Strings};
+
+use super::{
+  Structure, Token,
+  name::{component, unit_address},
+  read_token,
 };
 
 /// A sequential reader over an already validated structure block.
@@ -76,6 +65,25 @@ pub struct Properties<'a> {
 
 /// Iterator over the direct children of a node.
 pub struct Children<'a> {
+  /// Reader positioned within the contents of the node being iterated.
+  reader: ValidatedReader<'a>,
+
+  /// Strings block propagated to child-node views.
+  strings: Strings<'a>,
+
+  /// Current nesting depth relative to the node being iterated.
+  ///
+  /// A depth of zero means traversal is within the direct contents of the
+  /// node. A depth of one means traversal is inside a direct child, and larger
+  /// values represent deeper descendants.
+  depth: usize,
+
+  /// Whether the end of the node being iterated has been reached.
+  finished: bool,
+}
+
+/// Iterator over all descendant nodes of a node.
+pub struct Descendants<'a> {
   /// Reader positioned within the contents of the node being iterated.
   reader: ValidatedReader<'a>,
 
@@ -280,6 +288,15 @@ impl<'a> Node<'a> {
   pub fn child(&self, name: &[u8]) -> Option<Self> {
     self.children().find(|child| child.name() == name)
   }
+
+  /// Iterates over all descendants of this node.
+  ///
+  /// Nodes are yielded in depth first pre-order traversal order. This node
+  /// itself is not included.
+  #[must_use]
+  pub const fn descendants(&self) -> Descendants<'a> {
+    Descendants::new(self.content, self.strings)
+  }
 }
 
 impl<'a> Property<'a> {
@@ -408,6 +425,74 @@ impl<'a> Iterator for Children<'a> {
         )]
         Token::End => {
           unreachable!("validated node must end before the structure block terminator");
+        }
+      }
+    }
+  }
+}
+
+impl<'a> Descendants<'a> {
+  /// Creates a descendant iterator beginning at the contents of a validated node.
+  const fn new(content: &'a [u8], strings: Strings<'a>) -> Self {
+    Self {
+      reader: ValidatedReader::new(content),
+      strings,
+      depth: 0,
+      finished: false,
+    }
+  }
+}
+
+impl<'a> Iterator for Descendants<'a> {
+  type Item = Node<'a>;
+
+  fn next(&mut self) -> Option<Self::Item> {
+    if self.finished {
+      return None;
+    }
+
+    loop {
+      match self.reader.read_token() {
+        Token::Property => {
+          self.reader.skip_property();
+        }
+
+        Token::Nop => {}
+
+        Token::BeginNode => {
+          let name = self.reader.read_node_name();
+          let content = self.reader.remaining_bytes();
+          #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "nesting depth is bounded by the validated finite structure block"
+          )]
+          {
+            self.depth += 1;
+          }
+
+          return Some(Node::new(name, content, self.strings));
+        }
+
+        Token::EndNode => {
+          if self.depth == 0 {
+            self.finished = true;
+            return None;
+          }
+          #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "the preceding zero check prevents underflow"
+          )]
+          {
+            self.depth -= 1;
+          }
+        }
+
+        #[expect(
+          clippy::unreachable,
+          reason = "Structure::new validates that every node is closed before the final FDT_END token"
+        )]
+        Token::End => {
+          unreachable!("validated node must end before structure terminator");
         }
       }
     }

@@ -1,20 +1,22 @@
-//! Parsing and validation of the FDT structure block.
+//! Parsing and structural validation of the FDT structure block.
 //!
-//! This module validates the structure block and establishes the invariants
-//! represented by [`Structure`]. Validation includes both structural
-//! well-formedness and devicetree-wide requirements that apply independently
-//! of any particular device or binding.
+//! This module validates the serialized structure block and establishes the
+//! invariants represented by [`Structure`]. These invariants are sufficient for
+//! the generic navigation API to traverse nodes and properties safely and
+//! deterministically.
 //!
-//! Device-, bus-, and binding-specific semantics, including interpretation of
-//! property values, are outside this module's scope.
+//! Devicetree-wide semantic relationships that are not required for generic
+//! traversal are validated separately using the views built on top of
+//! [`Structure`].
 //!
 //! The Devicetree Specification requires alignment padding bytes to be zero.
-//! This parser does not validate their contents and accepts nonzero padding
-//! for compatibility with DTBs encountered in practice.
+//! This parser does not validate their contents and accepts nonzero padding for
+//! compatibility with DTBs encountered in practice.
 //!
 //! Implementation based on [Devicetree Specification v0.4](https://www.devicetree.org/).
 
 mod name;
+mod semantic;
 mod view;
 
 use core::fmt;
@@ -25,10 +27,10 @@ use crate::{
   strings::{PropertyNameError, Strings},
 };
 
-use name::{component, unit_address, validate};
+use name::validate;
 
 pub use name::NodeNameError;
-pub use view::{Children, Node, Properties, Property};
+pub use view::{Children, Descendants, Node, Properties, Property};
 
 /// An error encountered while validating an FDT structure block.
 #[derive(Debug, PartialEq, Eq)]
@@ -88,10 +90,7 @@ pub enum StructureError {
   },
 
   /// A node has a unit-address but does not contain a `reg` property.
-  UnitAddressWithoutReg {
-    /// Byte offset of the node's `FDT_BEGIN_NODE` token.
-    node_offset: usize,
-  },
+  UnitAddressWithoutReg,
 
   /// A node contains more than one child with the same full node name.
   DuplicateNodeName {
@@ -189,20 +188,11 @@ impl From<ReadError> for StructureError {
   }
 }
 
-/// A validated view of an FDT structure block.
+/// A structurally validated view of an FDT structure block.
 ///
-/// Instances can only be constructed through [`Structure::new`].
-///
-/// A `Structure` represents a complete rooted devicetree encoded by a
-/// well-formed structure block. It is unambiguous to traverse and satisfies
-/// the generic devicetree-wide invariants enforced by this parser.
-///
-/// See [`StructureError`] for the conditions rejected while establishing these
-/// guarantees.
-///
-/// This guarantee does not include device-, bus-, or binding-specific
-/// semantics, nor does it imply that property values have been interpreted or
-/// validated according to their bindings.
+/// A `Structure` represents a structure block that has passed the validation
+/// required by the generic navigation API. Instances are constructed through
+/// [`Structure::new`].
 pub(super) struct Structure<'a> {
   /// Raw bytes of the validated structure block.
   bytes: &'a [u8],
@@ -214,23 +204,6 @@ impl fmt::Debug for Structure<'_> {
       .field("size", &self.bytes.len())
       .finish()
   }
-}
-
-#[derive(Clone, Copy)]
-/// Tracks addressing information for the node whose properties may still
-/// appear.
-///
-/// The state is finalized when the node ends or when its first child begins,
-/// since properties are forbidden after children.
-struct NodeAddressState<'a> {
-  /// Byte offset of the node's `FDT_BEGIN_NODE` token.
-  node_offset: usize,
-
-  /// Unit-address component from the node name, if present.
-  unit_address: Option<&'a [u8]>,
-
-  /// Value of the node's `reg` property, if encountered.
-  reg: Option<&'a [u8]>,
 }
 
 /// Token values encoded in an FDT structure block.
@@ -381,14 +354,12 @@ fn find_prior_sibling_node(
 
       Token::Nop => {}
 
-      // `FDT_END` cannot occur in the previously validated prefix. Had the main
-      // parser encountered it, validation would have terminated before reaching
-      // the node whose prior siblings are being searched.
+      #[expect(
+        clippy::unreachable,
+        reason = "FDT_END cannot occur in the already validated structure prefix"
+      )]
       Token::End => {
-        return Err(StructureError::PrematureEnd {
-          offset: token_offset,
-          depth,
-        });
+        unreachable!("validated structure prefix cannot contain FDT_END");
       }
     }
   }
@@ -435,16 +406,15 @@ fn find_property(
     let length = reader.read_u32()?;
     let name_offset = reader.read_u32()?;
 
-    // Properties in this prefix have already had their names validated by
-    // `Structure::new`, so this cannot fail if the caller upholds the function's
-    // precondition.
-    let property_name = strings
-      .validate_property_name(name_offset)
-      .map_err(|source| StructureError::InvalidPropertyName {
-        property_offset: token_offset,
-        name_offset,
-        source,
-      })?;
+    let Ok(property_name) = strings.validate_property_name(name_offset) else {
+      #[expect(
+        clippy::unreachable,
+        reason = "property names in the searched prefix were already validated by Structure::new"
+      )]
+      {
+        unreachable!("validated property prefix contains an invalid property-name reference");
+      }
+    };
 
     if property_name == name {
       return Ok(Some(token_offset));
@@ -463,23 +433,20 @@ fn find_property(
 /// identifies the beginning of the current node's property prefix and
 /// `token_offset` identifies the current property token.
 ///
-/// Returns the property's value bytes if the property is `reg`, otherwise
-/// `None`.
-///
 /// # Errors
 ///
 /// Returns [`StructureError::Read`] if the property header, value, or padding
 /// is truncated, [`StructureError::InvalidPropertyName`] if the encoded
 /// property name is invalid, or [`StructureError::DuplicatePropertyName`] if
 /// the current node already contains a property with the same name.
-fn validate_property<'a>(
-  reader: &mut Reader<'a>,
-  bytes: &'a [u8],
+fn validate_property(
+  reader: &mut Reader<'_>,
+  bytes: &[u8],
   strings: &Strings<'_>,
   properties_start: usize,
   token_offset: usize,
   depth: usize,
-) -> Result<Option<&'a [u8]>, StructureError> {
+) -> Result<(), StructureError> {
   let length = reader.read_u32()?;
   let name_offset = reader.read_u32()?;
 
@@ -491,7 +458,7 @@ fn validate_property<'a>(
       source,
     })?;
 
-  let value = reader.read_bytes(helpers::usize_from_u32(length))?;
+  reader.read_bytes(helpers::usize_from_u32(length))?;
 
   // Padding contents are ignored.
   reader.align_to_4()?;
@@ -507,31 +474,9 @@ fn validate_property<'a>(
     });
   }
 
-  if name == b"reg" {
-    Ok(Some(value))
-  } else {
-    Ok(None)
-  }
-}
-
-/// Validates that a node with a unit-address contains a `reg` property.
-///
-/// # Errors
-///
-/// Returns [`StructureError::UnitAddressWithoutReg`] if the node has a
-/// unit-address but no `reg` property.
-const fn validate_node_addressing(state: NodeAddressState<'_>) -> Result<(), StructureError> {
-  if state.unit_address.is_some() && state.reg.is_none() {
-    return Err(StructureError::UnitAddressWithoutReg {
-      node_offset: state.node_offset,
-    });
-  }
-
   Ok(())
 }
 
-// TODO: Once some validation logic move out of lower level validation
-// see if function can only return byte and not offset
 /// Reads and decodes the next structure-block token.
 ///
 /// Returns the byte offset at which the token begins together with its decoded
@@ -572,19 +517,20 @@ fn read_non_nop_token(reader: &mut Reader<'_>) -> Result<(usize, Token), Structu
 impl<'a> Structure<'a> {
   /// Validates an FDT structure block and constructs a [`Structure`].
   ///
-  /// `bytes` must contain exactly one complete structure block. `strings`
+  /// Validation establishes the representation-level invariants required by the
+  /// generic navigation API, including valid token grammar and nesting, valid
+  /// node and property names, bounded property data and alignment, property
+  /// ordering, and uniqueness of properties and sibling node names.
+  ///
+  /// Devicetree-wide semantic relationships that are not required for traversal
+  /// are to be validated separately.
+  ///
+  /// `bytes` is interpreted as one complete structure block, while `strings`
   /// supplies the strings block referenced by property-name offsets.
-  ///
-  /// On success, the returned value satisfies the invariants documented by
-  /// [`Structure`].
-  ///
-  /// Padding bytes are consumed to establish alignment, but their contents are
-  /// intentionally not validated.
   ///
   /// # Errors
   ///
-  /// Returns a [`StructureError`] if the structure block does not satisfy the
-  /// requirements necessary to construct a [`Structure`].
+  /// Returns a [`StructureError`] if any of these requirements are violated.
   #[expect(
     clippy::too_many_lines,
     reason = "structure validation is a single state-machine pass whose readability would not improve by splitting it"
@@ -622,19 +568,10 @@ impl<'a> Structure<'a> {
     let root_content_start = reader.position();
     let mut properties_start = reader.position();
 
-    let mut cpus_seen = false;
-    let mut memory_seen = false;
-
-    let mut node_address_state: Option<NodeAddressState> = None;
-
     while depth > 0 {
       let (token_offset, token) = read_token(&mut reader)?;
 
       match token {
-        #[expect(
-          clippy::arithmetic_side_effects,
-          reason = "each depth increase requires consuming bytes from a slice whose length is bounded by usize::MAX"
-        )]
         Token::BeginNode => {
           let name_offset = reader.position();
           let name =
@@ -664,32 +601,14 @@ impl<'a> Structure<'a> {
             });
           }
 
-          // The current parent's property list is now complete because its
-          // child is beginning.
-          if let Some(state) = node_address_state.take() {
-            validate_node_addressing(state)?;
+          #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "each depth increase requires consuming bytes from a slice whose length is bounded by usize::MAX"
+          )]
+          {
+            depth += 1;
           }
 
-          node_address_state = Some(NodeAddressState {
-            node_offset: token_offset,
-            unit_address: unit_address(name),
-            reg: None,
-          });
-
-          if depth == 1 {
-            // TODO: Reconsider if these checks can be done after tree's
-            // structure is validated and the higher level view.rs API can be
-            // used
-            if name == b"cpus" {
-              cpus_seen = true;
-            }
-
-            if component(name) == b"memory" {
-              memory_seen = true;
-            }
-          }
-
-          depth += 1;
           phase = NodePhase::Properties;
           properties_start = reader.position();
         }
@@ -699,10 +618,6 @@ impl<'a> Structure<'a> {
           reason = "the enclosing loop guarantees depth is greater than zero"
         )]
         Token::EndNode => {
-          if let Some(state) = node_address_state.take() {
-            validate_node_addressing(state)?;
-          }
-
           depth -= 1;
 
           if depth > 0 {
@@ -720,7 +635,7 @@ impl<'a> Structure<'a> {
             });
           }
 
-          let reg = validate_property(
+          validate_property(
             &mut reader,
             bytes,
             strings,
@@ -728,10 +643,6 @@ impl<'a> Structure<'a> {
             token_offset,
             depth,
           )?;
-
-          if let (Some(state), Some(reg)) = (&mut node_address_state, reg) {
-            state.reg = Some(reg);
-          }
         }
 
         Token::Nop => {}
@@ -761,14 +672,6 @@ impl<'a> Structure<'a> {
         offset: reader.position(),
         remaining: reader.remaining(),
       });
-    }
-
-    if !cpus_seen {
-      return Err(StructureError::MissingCpusNode);
-    }
-
-    if !memory_seen {
-      return Err(StructureError::MissingMemoryNode);
     }
 
     Ok(Self { bytes })
@@ -959,92 +862,6 @@ mod tests {
     );
   }
 
-  #[test]
-  fn missing_cpus_node_is_rejected() {
-    let mut bytes = Vec::new();
-
-    push_begin_node(&mut bytes, b"");
-
-    push_begin_node(&mut bytes, b"memory");
-    push_end_node(&mut bytes);
-
-    push_end_node(&mut bytes);
-    push_end(&mut bytes);
-
-    assert_eq!(
-      Structure::new(&bytes, &strings()).unwrap_err(),
-      StructureError::MissingCpusNode
-    );
-  }
-
-  #[test]
-  fn missing_memory_node_is_rejected() {
-    let mut bytes = Vec::new();
-
-    push_begin_node(&mut bytes, b"");
-
-    push_begin_node(&mut bytes, b"cpus");
-    push_end_node(&mut bytes);
-
-    push_end_node(&mut bytes);
-    push_end(&mut bytes);
-
-    assert_eq!(
-      Structure::new(&bytes, &strings()).unwrap_err(),
-      StructureError::MissingMemoryNode
-    );
-  }
-
-  #[test]
-  fn nested_cpus_node_does_not_satisfy_requirement() {
-    let mut bytes = Vec::new();
-
-    push_begin_node(&mut bytes, b"");
-
-    push_begin_node(&mut bytes, b"memory");
-    push_end_node(&mut bytes);
-
-    push_begin_node(&mut bytes, b"container");
-
-    push_begin_node(&mut bytes, b"cpus");
-    push_end_node(&mut bytes);
-
-    push_end_node(&mut bytes);
-
-    push_end_node(&mut bytes);
-    push_end(&mut bytes);
-
-    assert_eq!(
-      Structure::new(&bytes, &strings()).unwrap_err(),
-      StructureError::MissingCpusNode
-    );
-  }
-
-  #[test]
-  fn nested_memory_node_does_not_satisfy_requirement() {
-    let mut bytes = Vec::new();
-
-    push_begin_node(&mut bytes, b"");
-
-    push_begin_node(&mut bytes, b"cpus");
-    push_end_node(&mut bytes);
-
-    push_begin_node(&mut bytes, b"container");
-
-    push_begin_node(&mut bytes, b"memory");
-    push_end_node(&mut bytes);
-
-    push_end_node(&mut bytes);
-
-    push_end_node(&mut bytes);
-    push_end(&mut bytes);
-
-    assert_eq!(
-      Structure::new(&bytes, &strings()).unwrap_err(),
-      StructureError::MissingMemoryNode
-    );
-  }
-
   // Node validation
   #[test]
   fn unterminated_child_node_name_is_rejected() {
@@ -1227,48 +1044,6 @@ mod tests {
     push_end(&mut bytes);
 
     assert!(Structure::new(&bytes, &strings()).is_ok());
-  }
-
-  #[test]
-  fn unit_address_without_reg_is_rejected() {
-    let mut bytes = Vec::new();
-
-    push_begin_node(&mut bytes, b"");
-    push_required_root_nodes(&mut bytes);
-
-    let node_offset = push_begin_node(&mut bytes, b"serial@1000");
-    push_end_node(&mut bytes);
-
-    push_end_node(&mut bytes);
-    push_end(&mut bytes);
-
-    assert_eq!(
-      Structure::new(&bytes, &strings()).unwrap_err(),
-      StructureError::UnitAddressWithoutReg { node_offset }
-    );
-  }
-
-  #[test]
-  fn parent_unit_address_without_reg_is_rejected_when_child_begins() {
-    let mut bytes = Vec::new();
-
-    push_begin_node(&mut bytes, b"");
-    push_required_root_nodes(&mut bytes);
-
-    let node_offset = push_begin_node(&mut bytes, b"bus@1000");
-
-    push_begin_node(&mut bytes, b"child");
-    push_end_node(&mut bytes);
-
-    push_end_node(&mut bytes);
-
-    push_end_node(&mut bytes);
-    push_end(&mut bytes);
-
-    assert_eq!(
-      Structure::new(&bytes, &strings()).unwrap_err(),
-      StructureError::UnitAddressWithoutReg { node_offset }
-    );
   }
 
   // Property ordering and validation

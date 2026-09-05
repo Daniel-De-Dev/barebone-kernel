@@ -6,11 +6,13 @@ use std::vec::Vec;
 pub(super) const REG_OFFSET: u32 = 11;
 pub(super) const ROOT_PROPERTY_OFFSET: u32 = 15;
 pub(super) const CHILD_PROPERTY_OFFSET: u32 = 29;
+pub(super) const RANGES_OFFSET: u32 = 44;
 
 const STRINGS: &[u8] = b"compatible\0\
 reg\0\
 root-property\0\
-child-property\0";
+child-property\0\
+ranges\0";
 
 pub(super) fn push_u32(bytes: &mut Vec<u8>, value: u32) {
   bytes.extend_from_slice(&value.to_be_bytes());

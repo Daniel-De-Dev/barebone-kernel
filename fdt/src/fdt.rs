@@ -1,10 +1,12 @@
-//! Construction and validation of a flattened devicetree blob.
+//! Construction of validated flattened devicetree blobs.
 //!
-//! This module defines [`Fdt`], the validated view of a DTB, and owns the
-//! unsafe boundary through which raw DTB memory enters the parser.
+//! This module defines [`Fdt`], the top-level view of a flattened devicetree
+//! blob, and owns the unsafe boundary through which raw DTB memory enters the
+//! parser.
 //!
-//! Successful construction establishes a bounded immutable view of the blob and
-//! validates the data needed by the views retained in [`Fdt`].
+//! [`Fdt::from_ptr`] establishes the blob's memory range and coordinates the
+//! validation required before an [`Fdt`] is made available to callers.
+//! Guarantees are documented by the validation components that establish them.
 //!
 //! Implementation based on [Devicetree Specification v0.4](https://www.devicetree.org/).
 
@@ -53,14 +55,18 @@ pub enum BlobError {
   },
 }
 
-/// A validated view of a flattened devicetree blob.
+/// A validated, read-only view of a flattened devicetree blob.
 ///
 /// `Fdt` borrows the underlying DTB memory for `'a` and retains the validated
-/// views needed to access its contents. Construction is performed through
-/// [`Fdt::from_ptr`].
+/// views used to access its constituent blocks.
 ///
-/// Structural validity does not imply that the represented devicetree satisfies
-/// the semantic requirements of any particular device or binding.
+/// Construction is performed through [`Fdt::from_ptr`]. A successfully
+/// constructed `Fdt` guarantees that each retained component satisfies the
+/// invariants required by its corresponding view and that the additional
+/// devicetree-wide validation performed during construction has succeeded.
+///
+/// These guarantees do not imply conformance to device-, bus-, or
+/// binding-specific semantic requirements.
 #[derive(Debug)]
 pub struct Fdt<'a> {
   /// Validated information decoded from the DTB header.
@@ -69,7 +75,7 @@ pub struct Fdt<'a> {
   /// Validated structure block.
   structure: Structure<'a>,
 
-  /// Validated strings block.
+  /// Bounded view of the strings block used to resolve property names.
   strings: Strings<'a>,
 
   /// Validated memory reservations block.
@@ -77,25 +83,23 @@ pub struct Fdt<'a> {
 }
 
 impl<'a> Fdt<'a> {
-  /// Constructs and validates an FDT backed by memory beginning at `ptr`.
+  /// Constructs an [`Fdt`] from a flattened devicetree blob beginning at `ptr`.
   ///
-  /// On success, the returned [`Fdt`] borrows the underlying DTB memory for
-  /// `'a`. Malformed or unsupported blob contents are reported through
-  /// [`Error`].
+  /// On success, the returned value satisfies the guarantees documented on
+  /// [`Fdt`] and borrows the underlying DTB memory for `'a`.
   ///
   /// # Safety
   ///
   /// If `ptr` is non-null, the caller must guarantee that it is valid for
-  /// reading at least [`HEADER_SIZE`] initialized bytes. If those bytes describe
+  /// reading at least [`HEADER_SIZE`] initialized bytes. If those bytes contain
   /// a header accepted by the parser, the complete byte range declared by that
-  /// header must be initialized, readable, contiguous, contained within one
-  /// allocation, and remain valid and unmodified for `'a`.
+  /// header must be initialized, readable, contiguous, contained within a
+  /// single allocation, and remain valid and unmodified for `'a`.
   ///
   /// # Errors
   ///
-  /// Returns [`Error::Blob`] if the DTB memory range cannot be represented
-  /// safely, or a validation error if the encoded DTB is malformed or
-  /// unsupported.
+  /// Returns an [`Error`] if the DTB memory range cannot be represented safely
+  /// or if any validation performed during construction fails.
   pub unsafe fn from_ptr(ptr: *const u8) -> Result<Self, Error> {
     if ptr.is_null() {
       return Err(BlobError::NullPointer.into());
@@ -162,6 +166,8 @@ impl<'a> Fdt<'a> {
 
     let strings = Strings::new(strings_bytes);
     let structure = Structure::new(structure_bytes, &strings)?;
+
+    structure.validate_semantics(strings)?;
 
     // The reservation block does not encode its own size. Bound its candidate
     // extent by the nearest known block beginning after it, or by the end of the
@@ -351,5 +357,14 @@ mod tests {
         remaining: 0,
       })
     );
+  }
+
+  #[test]
+  fn root_returns_root_node() {
+    let bytes = minimal_blob();
+
+    let fdt = unsafe { Fdt::from_ptr(bytes.0.as_ptr()).expect("valid DTB should parse") };
+
+    assert_eq!(fdt.root().name(), b"");
   }
 }

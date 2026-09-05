@@ -1,12 +1,11 @@
 //! A `no_std` parser and validator for flattened devicetrees (FDT).
 //!
 //! [`Fdt`] provides a validated, borrowed view of a Device Tree Blob (DTB).
-//! Construction validates the binary structure required to safely interpret
-//! the blob.
+//! Construction performs the validation required before the blob is exposed
+//! through the public API.
 //!
-//! Validation is structural. It does not establish that the represented
-//! devicetree satisfies device-specific or binding-specific semantic
-//! requirements.
+//! The guarantees provided by a constructed [`Fdt`] do not imply conformance
+//! to device-, bus-, or binding-specific semantic requirements.
 //!
 //! Implementation based on [Devicetree Specification v0.4](https://www.devicetree.org/).
 
@@ -30,7 +29,9 @@ pub use fdt::{BlobError, Fdt};
 pub use header::{BlockKind, HeaderError};
 pub use reader::ReadError;
 pub use strings::PropertyNameError;
-pub use structure::{Children, Node, NodeNameError, Properties, Property, StructureError};
+pub use structure::{
+  Children, Descendants, Node, NodeNameError, Properties, Property, StructureError,
+};
 
 #[cfg(target_pointer_width = "16")]
 compile_error!("the fdt crate requires a target pointer width of at least 32 bits");
