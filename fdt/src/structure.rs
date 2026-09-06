@@ -705,7 +705,7 @@ mod tests {
     let bytes = minimal_structure();
     let structure = Structure::new(&bytes, &strings()).expect("valid structure should parse");
 
-    assert_eq!(std::format!("{structure:?}"), "Structure { size: 68 }");
+    assert_eq!(std::format!("{structure:?}"), "Structure { size: 76 }");
   }
 
   // Node names

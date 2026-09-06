@@ -76,7 +76,15 @@ pub(super) fn push_required_root_nodes(bytes: &mut Vec<u8>) {
   push_end_node(bytes);
 
   push_begin_node(bytes, b"memory@0");
-  push_property(bytes, REG_OFFSET, b"0");
+  push_property(
+    bytes,
+    REG_OFFSET,
+    &[
+      0x00, 0x00, 0x00, 0x00, // address, high cell
+      0x00, 0x00, 0x00, 0x00, // address, low cell
+      0x00, 0x00, 0x10, 0x00, // size = 0x1000
+    ],
+  );
   push_end_node(bytes);
 }
 

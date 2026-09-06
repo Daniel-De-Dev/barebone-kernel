@@ -34,6 +34,26 @@ pub enum SemanticError {
     /// Length of the property value in bytes.
     length: usize,
   },
+
+  /// The byte length of a `reg` property cannot be divided into complete
+  /// address/size entries using the cell counts established by its parent.
+  InvalidRegLength {
+    /// Length of the `reg` property value in bytes.
+    length: usize,
+
+    /// Required length of one complete `reg` entry in bytes.
+    entry_size: usize,
+  },
+
+  /// The cell counts established by a parent produce a `reg` entry size that
+  /// cannot be represented by this implementation.
+  RegEntrySizeOverflow {
+    /// Number of cells used for the address field.
+    address_cells: u32,
+
+    /// Number of cells used for the size field.
+    size_cells: u32,
+  },
 }
 
 impl From<SemanticError> for StructureError {

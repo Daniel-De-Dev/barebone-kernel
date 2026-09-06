@@ -1,8 +1,11 @@
 //! Validation and interpretation of generic Devicetree addressing semantics.
 
-use crate::structure::Node;
+use crate::{helpers, structure::Node};
 
 use super::SemanticError;
+
+/// Number of bytes in one Devicetree cell.
+const CELL_SIZE: usize = size_of::<u32>();
 
 /// Property that specifies the number of address cells used by direct children.
 const ADDRESS_CELLS_PROPERTY: &[u8] = b"#address-cells";
@@ -11,6 +14,7 @@ const ADDRESS_CELLS_PROPERTY: &[u8] = b"#address-cells";
 const SIZE_CELLS_PROPERTY: &[u8] = b"#size-cells";
 
 /// Number of 32-bit cells used to encode an address for a node's direct child.
+#[derive(Clone, Copy)]
 pub(super) struct AddressCells(
   /// Number of cells in the encoded address field.
   u32,
@@ -28,6 +32,7 @@ impl AddressCells {
 }
 
 /// Number of 32-bit cells used to encode a size for a node's direct child.
+#[derive(Clone, Copy)]
 pub(super) struct SizeCells(
   /// Number of cells in the encoded size field.
   u32,
@@ -49,6 +54,7 @@ impl SizeCells {
 /// The values are taken from the node's `#address-cells` and `#size-cells`
 /// properties. Missing properties use the effective defaults of two address
 /// cells and one size cell. Values are not inherited from ancestor nodes.
+#[derive(Clone, Copy)]
 pub(super) struct ChildAddressing {
   /// Number of cells used to encode addresses of direct children.
   address_cells: AddressCells,
@@ -74,37 +80,102 @@ impl ChildAddressing {
 /// Validates generic addressing semantics across the entire tree.
 ///
 /// Every explicit `#address-cells` and `#size-cells` property must contain
-/// exactly one big-endian `u32`. Missing properties are valid and imply the
-/// effective defaults of two address cells and one size cell.
-///
-/// Validation also checks the generic relationship between node unit addresses
-/// and their addressing properties.
+/// exactly one big-endian `u32`. Every `reg` property must contain a whole
+/// number of entries encoded using the cell counts established by its parent.
 ///
 /// # Errors
 ///
-/// Returns [`SemanticError::InvalidAddressCells`] or
-/// [`SemanticError::InvalidSizeCells`] when an explicit cell-count property is
-/// malformed, or another [`SemanticError`] when a generic addressing rule is
-/// violated.
+/// Returns a [`SemanticError`] when a generic addressing rule is violated.
 pub(super) fn validate(root: &Node<'_>) -> Result<(), SemanticError> {
-  validate_node(root)?;
+  validate_subtree(root)
+}
 
-  for node in root.descendants() {
-    validate_node(&node)?;
+/// Validates `parent` and recursively validates its descendants.
+///
+/// The cell counts established by `parent` are used to validate `reg`
+/// properties belonging to its direct children.
+///
+/// # Errors
+///
+/// Returns a [`SemanticError`] when `parent` or one of its descendants
+/// violates a generic addressing rule.
+fn validate_subtree(parent: &Node<'_>) -> Result<(), SemanticError> {
+  validate_node(parent)?;
+
+  let addressing = child_addressing(parent);
+
+  for child in parent.children() {
+    validate_reg(&child, addressing)?;
+    validate_subtree(&child)?;
   }
 
   Ok(())
 }
 
-/// Validates all generic addressing rules enforced for one node.
+/// Validates the encoding of a node's `reg` property.
 ///
-/// This validates the node's child cell-count encoding and its own
-/// unit-address relationship.
+/// Each `reg` entry consists of the number of address cells and size cells
+/// established by the node's parent. A size-cell count of zero therefore
+/// produces entries with no size field.
+///
+/// Nodes without a `reg` property require no validation.
+///
+/// # Errors
+///
+/// Returns [`SemanticError::RegEntrySizeOverflow`] if the parent cell counts
+/// cannot be converted into a representable entry size.
+///
+/// Returns [`SemanticError::InvalidRegLength`] if the property value cannot be
+/// divided into complete entries.
+fn validate_reg(node: &Node<'_>, parent_addressing: ChildAddressing) -> Result<(), SemanticError> {
+  let Some(reg) = node.property(b"reg") else {
+    return Ok(());
+  };
+
+  let address_cells = parent_addressing.address_cells().get();
+  let size_cells = parent_addressing.size_cells().get();
+
+  let address_cells_usize = helpers::usize_from_u32(address_cells);
+  let size_cells_usize = helpers::usize_from_u32(size_cells);
+
+  let entry_cells = address_cells_usize.checked_add(size_cells_usize).ok_or(
+    SemanticError::RegEntrySizeOverflow {
+      address_cells,
+      size_cells,
+    },
+  )?;
+
+  let entry_size =
+    entry_cells
+      .checked_mul(CELL_SIZE)
+      .ok_or(SemanticError::RegEntrySizeOverflow {
+        address_cells,
+        size_cells,
+      })?;
+
+  let length = reg.value().len();
+
+  if entry_size == 0 {
+    if length != 0 {
+      return Err(SemanticError::InvalidRegLength { length, entry_size });
+    }
+
+    return Ok(());
+  }
+
+  if !length.is_multiple_of(entry_size) {
+    return Err(SemanticError::InvalidRegLength { length, entry_size });
+  }
+
+  Ok(())
+}
+
+/// Validates generic addressing rules that depend only on `node`.
 ///
 /// # Errors
 ///
 /// Returns a [`SemanticError`] if the node contains malformed cell-count
-/// properties or violates another generic addressing rule.
+/// properties or violates another node-local addressing rule.
 fn validate_node(node: &Node<'_>) -> Result<(), SemanticError> {
   parse_child_addressing(node)?;
   validate_node_addressing(node)
@@ -244,6 +315,16 @@ mod tests {
     validate(&root)
   }
 
+  fn push_reg_cells(bytes: &mut Vec<u8>, cells: &[u32]) {
+    let mut value = Vec::new();
+
+    for cell in cells {
+      value.extend_from_slice(&cell.to_be_bytes());
+    }
+
+    push_property(bytes, REG_OFFSET, &value);
+  }
+
   #[test]
   fn unit_address_with_reg_is_accepted() {
     let mut bytes = Vec::new();
@@ -252,7 +333,13 @@ mod tests {
     push_required_root_nodes(&mut bytes);
 
     push_begin_node(&mut bytes, b"device@1000");
-    push_property(&mut bytes, REG_OFFSET, &[0, 0, 0x10, 0]);
+    push_property(
+      &mut bytes,
+      REG_OFFSET,
+      &[
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x01, 0x00,
+      ],
+    );
     push_end_node(&mut bytes);
 
     push_end_node(&mut bytes);
@@ -443,5 +530,223 @@ mod tests {
     // client defaults instead.
     assert_eq!(child_addressing(&bus).address_cells().get(), 2);
     assert_eq!(child_addressing(&bus).size_cells().get(), 1);
+  }
+  #[test]
+  fn reg_absent_is_accepted() {
+    let mut bytes = Vec::new();
+
+    push_begin_node(&mut bytes, b"");
+
+    push_begin_node(&mut bytes, b"device");
+    push_end_node(&mut bytes);
+
+    push_end_node(&mut bytes);
+    push_end(&mut bytes);
+
+    assert_eq!(validate_structure(&bytes), Ok(()));
+  }
+
+  #[test]
+  fn single_reg_entry_is_accepted() {
+    let mut bytes = Vec::new();
+
+    push_begin_node(&mut bytes, b"");
+
+    // Root defaults to two address cells and one size cell.
+    push_begin_node(&mut bytes, b"device@1000");
+    push_reg_cells(&mut bytes, &[0x0000_0000, 0x0000_1000, 0x0000_0100]);
+    push_end_node(&mut bytes);
+
+    push_end_node(&mut bytes);
+    push_end(&mut bytes);
+
+    assert_eq!(validate_structure(&bytes), Ok(()));
+  }
+
+  #[test]
+  fn multiple_reg_entries_are_accepted() {
+    let mut bytes = Vec::new();
+
+    push_begin_node(&mut bytes, b"");
+
+    // Each entry contains two address cells followed by one size cell.
+    push_begin_node(&mut bytes, b"device@1000");
+    push_reg_cells(
+      &mut bytes,
+      &[
+        0x0000_0000,
+        0x0000_1000,
+        0x0000_0100,
+        0x0000_0000,
+        0x0000_2000,
+        0x0000_0200,
+      ],
+    );
+    push_end_node(&mut bytes);
+
+    push_end_node(&mut bytes);
+    push_end(&mut bytes);
+
+    assert_eq!(validate_structure(&bytes), Ok(()));
+  }
+
+  #[test]
+  fn incomplete_reg_entry_is_rejected() {
+    let mut bytes = Vec::new();
+
+    push_begin_node(&mut bytes, b"");
+
+    push_begin_node(&mut bytes, b"device@1000");
+
+    // Root defaults require three cells per entry, but only two are present.
+    push_reg_cells(&mut bytes, &[0x0000_0000, 0x0000_1000]);
+
+    push_end_node(&mut bytes);
+
+    push_end_node(&mut bytes);
+    push_end(&mut bytes);
+
+    assert_eq!(
+      validate_structure(&bytes),
+      Err(SemanticError::InvalidRegLength {
+        length: 8,
+        entry_size: 12,
+      })
+    );
+  }
+
+  #[test]
+  fn reg_uses_parent_cell_counts() {
+    let mut bytes = Vec::new();
+
+    push_begin_node(&mut bytes, b"");
+
+    // Direct children use one address cell and one size cell.
+    push_cell_counts(&mut bytes, 1, 1);
+
+    push_begin_node(&mut bytes, b"device@1000");
+    push_reg_cells(&mut bytes, &[0x0000_1000, 0x0000_0100]);
+    push_end_node(&mut bytes);
+
+    push_end_node(&mut bytes);
+    push_end(&mut bytes);
+
+    assert_eq!(validate_structure(&bytes), Ok(()));
+  }
+
+  #[test]
+  fn reg_uses_immediate_parent_cell_counts() {
+    let mut bytes = Vec::new();
+
+    push_begin_node(&mut bytes, b"");
+
+    // Root's direct children use one address and one size cell.
+    push_cell_counts(&mut bytes, 1, 1);
+
+    push_begin_node(&mut bytes, b"bus");
+
+    // `bus` deliberately defines no cell counts. Its own children therefore
+    // use the defaults of two address cells and one size cell.
+    push_begin_node(&mut bytes, b"device@1000");
+    push_reg_cells(&mut bytes, &[0x0000_0000, 0x0000_1000, 0x0000_0100]);
+    push_end_node(&mut bytes);
+
+    push_end_node(&mut bytes);
+
+    push_end_node(&mut bytes);
+    push_end(&mut bytes);
+
+    assert_eq!(validate_structure(&bytes), Ok(()));
+  }
+
+  #[test]
+  fn zero_size_cells_omits_size_field() {
+    let mut bytes = Vec::new();
+
+    push_begin_node(&mut bytes, b"");
+
+    push_cell_counts(&mut bytes, 2, 0);
+
+    push_begin_node(&mut bytes, b"device@1000");
+
+    // With zero size cells, an entry contains only its two address cells.
+    push_reg_cells(&mut bytes, &[0x0000_0000, 0x0000_1000]);
+
+    push_end_node(&mut bytes);
+
+    push_end_node(&mut bytes);
+    push_end(&mut bytes);
+
+    assert_eq!(validate_structure(&bytes), Ok(()));
+  }
+
+  #[test]
+  fn zero_size_cells_rejects_size_field() {
+    let mut bytes = Vec::new();
+
+    push_begin_node(&mut bytes, b"");
+
+    push_cell_counts(&mut bytes, 2, 0);
+
+    push_begin_node(&mut bytes, b"device@1000");
+
+    // Only two cells belong to an entry. Adding a third leaves an incomplete
+    // second entry.
+    push_reg_cells(&mut bytes, &[0x0000_0000, 0x0000_1000, 0x0000_0100]);
+
+    push_end_node(&mut bytes);
+
+    push_end_node(&mut bytes);
+    push_end(&mut bytes);
+
+    assert_eq!(
+      validate_structure(&bytes),
+      Err(SemanticError::InvalidRegLength {
+        length: 12,
+        entry_size: 8,
+      })
+    );
+  }
+
+  #[test]
+  fn zero_width_reg_accepts_empty_value() {
+    let mut bytes = Vec::new();
+
+    push_begin_node(&mut bytes, b"");
+
+    push_cell_counts(&mut bytes, 0, 0);
+
+    push_begin_node(&mut bytes, b"device");
+    push_property(&mut bytes, REG_OFFSET, &[]);
+    push_end_node(&mut bytes);
+
+    push_end_node(&mut bytes);
+    push_end(&mut bytes);
+
+    assert_eq!(validate_structure(&bytes), Ok(()));
+  }
+
+  #[test]
+  fn zero_width_reg_rejects_nonempty_value() {
+    let mut bytes = Vec::new();
+
+    push_begin_node(&mut bytes, b"");
+
+    push_cell_counts(&mut bytes, 0, 0);
+
+    push_begin_node(&mut bytes, b"device");
+    push_reg_cells(&mut bytes, &[0x0000_0000]);
+    push_end_node(&mut bytes);
+
+    push_end_node(&mut bytes);
+    push_end(&mut bytes);
+
+    assert_eq!(
+      validate_structure(&bytes),
+      Err(SemanticError::InvalidRegLength {
+        length: 4,
+        entry_size: 0,
+      })
+    );
   }
 }
