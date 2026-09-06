@@ -15,7 +15,7 @@ use core::slice;
 use crate::{
   error::Error,
   header::{HEADER_SIZE, Header},
-  reservation::Reservations,
+  reservation::{MemoryReservations, Reservations},
   strings::Strings,
   structure::{MemoryRanges, Node, Structure},
 };
@@ -220,6 +220,15 @@ impl<'a> Fdt<'a> {
     let root = self.root();
     MemoryRanges::new(&root)
   }
+
+  /// Returns an iterator over physical memory regions listed in the FDT memory
+  /// reservation block.
+  ///
+  /// The terminating `(0, 0)` entry is not yielded.
+  #[must_use]
+  pub const fn memory_reservations(&self) -> MemoryReservations<'a> {
+    self.reservations.iter()
+  }
 }
 
 #[cfg(test)]
@@ -421,5 +430,14 @@ mod tests {
     assert_eq!(range.address(), 0);
     assert_eq!(range.size(), 0x1000);
     assert!(ranges.next().is_none());
+  }
+
+  #[test]
+  fn memory_reservations_are_exposed() {
+    let blob = minimal_blob();
+
+    let fdt = unsafe { Fdt::from_ptr(blob.0.as_ptr()) }.expect("valid DTB should parse");
+
+    assert!(fdt.memory_reservations().next().is_none());
   }
 }

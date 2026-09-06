@@ -28,6 +28,7 @@ pub use error::Error;
 pub use fdt::{BlobError, Fdt};
 pub use header::{BlockKind, HeaderError};
 pub use reader::ReadError;
+pub use reservation::{MemoryReservation, MemoryReservations};
 pub use strings::PropertyNameError;
 pub use structure::{
   Children, Descendants, MemoryRange, MemoryRanges, Node, NodeNameError, Properties, Property,
