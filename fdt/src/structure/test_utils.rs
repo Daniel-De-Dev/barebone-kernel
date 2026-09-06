@@ -7,12 +7,16 @@ pub(super) const REG_OFFSET: u32 = 11;
 pub(super) const ROOT_PROPERTY_OFFSET: u32 = 15;
 pub(super) const CHILD_PROPERTY_OFFSET: u32 = 29;
 pub(super) const RANGES_OFFSET: u32 = 44;
+pub(super) const ADDRESS_CELLS_OFFSET: u32 = 51;
+pub(super) const SIZE_CELLS_OFFSET: u32 = 66;
 
 const STRINGS: &[u8] = b"compatible\0\
 reg\0\
 root-property\0\
 child-property\0\
-ranges\0";
+ranges\0\
+#address-cells\0\
+#size-cells\0";
 
 pub(super) fn push_u32(bytes: &mut Vec<u8>, value: u32) {
   bytes.extend_from_slice(&value.to_be_bytes());
@@ -74,6 +78,12 @@ pub(super) fn push_required_root_nodes(bytes: &mut Vec<u8>) {
   push_begin_node(bytes, b"memory@0");
   push_property(bytes, REG_OFFSET, b"0");
   push_end_node(bytes);
+}
+
+pub(super) fn push_cell_counts(bytes: &mut Vec<u8>, address_cells: u32, size_cells: u32) {
+  push_property(bytes, ADDRESS_CELLS_OFFSET, &address_cells.to_be_bytes());
+
+  push_property(bytes, SIZE_CELLS_OFFSET, &size_cells.to_be_bytes());
 }
 
 pub(super) fn structure_with_nested_children() -> (Vec<u8>, Strings<'static>) {

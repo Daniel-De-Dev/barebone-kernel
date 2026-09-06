@@ -1,10 +1,46 @@
 //! Devicetree-wide semantic validation performed after structural validation.
 //!
-//! These checks are expressed through the generic navigation API rather than
-//! by re-parsing the serialized structure block.
+//! Semantic validation operates on the generic node/property views established
+//! by structural validation. It checks relationships and property encodings
+//! whose validity depends on their meaning rather than on the serialized
+//! structure-block format alone.
+
+mod addressing;
 
 use super::{Structure, StructureError, view::Node};
 use crate::strings::Strings;
+
+/// An error encountered while validating Devicetree-wide semantic rules.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SemanticError {
+  /// The root node does not contain the required `cpus` child.
+  MissingCpusNode,
+
+  /// The root node contains no child whose node-name component is `memory`.
+  MissingMemoryNode,
+
+  /// A node has a unit-address but does not contain the required addressing
+  /// property.
+  UnitAddressWithoutReg,
+
+  /// `#address-cells` does not contain exactly one `<u32>`.
+  InvalidAddressCells {
+    /// Length of the property value in bytes.
+    length: usize,
+  },
+
+  /// `#size-cells` does not contain exactly one `<u32>`.
+  InvalidSizeCells {
+    /// Length of the property value in bytes.
+    length: usize,
+  },
+}
+
+impl From<SemanticError> for StructureError {
+  fn from(error: SemanticError) -> Self {
+    Self::Semantic(error)
+  }
+}
 
 impl<'a> Structure<'a> {
   /// Validates devicetree-wide semantic invariants that are not required for
@@ -16,15 +52,11 @@ impl<'a> Structure<'a> {
   ///
   /// Returns a [`StructureError`] when one of the semantic invariants enforced
   /// by this parser is violated.
-  // TODO: Make a specific StructureError::SemanticError sub group/type?
   pub(crate) fn validate_semantics(&self, strings: Strings<'a>) -> Result<(), StructureError> {
     let root = self.root(strings);
 
     validate_required_root_nodes(&root)?;
-
-    for node in root.descendants() {
-      validate_node_addressing(&node)?;
-    }
+    addressing::validate(&root)?;
 
     Ok(())
   }
@@ -40,9 +72,9 @@ impl<'a> Structure<'a> {
 ///
 /// # Errors
 ///
-/// Returns [`StructureError::MissingCpusNode`] if `cpus` is absent, or
-/// [`StructureError::MissingMemoryNode`] if no memory node is present.
-fn validate_required_root_nodes(root: &Node<'_>) -> Result<(), StructureError> {
+/// Returns [`SemanticError::MissingCpusNode`] if `cpus` is absent, or
+/// [`SemanticError::MissingMemoryNode`] if no memory node is present.
+fn validate_required_root_nodes(root: &Node<'_>) -> Result<(), SemanticError> {
   let mut cpus_seen = false;
   let mut memory_seen = false;
 
@@ -57,41 +89,11 @@ fn validate_required_root_nodes(root: &Node<'_>) -> Result<(), StructureError> {
   }
 
   if !cpus_seen {
-    return Err(StructureError::MissingCpusNode);
+    return Err(SemanticError::MissingCpusNode);
   }
 
   if !memory_seen {
-    return Err(StructureError::MissingMemoryNode);
-  }
-
-  Ok(())
-}
-
-/// Validates the basic relationship between a node's unit address and `reg`.
-///
-/// A node whose name contains an `@unit-address` must contain a `reg` property.
-///
-/// This check does not yet verify that the unit address matches the first
-/// address encoded by `reg`.
-///
-/// For compatibility with established devicetree tooling and generated trees,
-/// a `ranges` property is also accepted.
-///
-/// # Errors
-///
-/// Returns [`StructureError::UnitAddressWithoutReg`] if a node has a unit
-/// address but no `reg` property.
-// TODO: Add check that first entry of reg matches?
-fn validate_node_addressing(node: &Node<'_>) -> Result<(), StructureError> {
-  if node.unit_address().is_none() {
-    return Ok(());
-  }
-
-  let has_reg = node.property(b"reg").is_some();
-  let has_ranges = node.property(b"ranges").is_some();
-
-  if !has_reg && !has_ranges {
-    return Err(StructureError::UnitAddressWithoutReg);
+    return Err(SemanticError::MissingMemoryNode);
   }
 
   Ok(())
@@ -139,7 +141,10 @@ mod tests {
     push_end_node(&mut bytes);
     push_end(&mut bytes);
 
-    assert_eq!(validate(&bytes), Err(StructureError::MissingCpusNode));
+    assert_eq!(
+      validate(&bytes),
+      Err(StructureError::Semantic(SemanticError::MissingCpusNode))
+    );
   }
 
   #[test]
@@ -154,7 +159,10 @@ mod tests {
     push_end_node(&mut bytes);
     push_end(&mut bytes);
 
-    assert_eq!(validate(&bytes), Err(StructureError::MissingMemoryNode));
+    assert_eq!(
+      validate(&bytes),
+      Err(StructureError::Semantic(SemanticError::MissingMemoryNode))
+    );
   }
 
   #[test]
@@ -174,7 +182,10 @@ mod tests {
     push_end_node(&mut bytes);
     push_end(&mut bytes);
 
-    assert_eq!(validate(&bytes), Err(StructureError::MissingCpusNode));
+    assert_eq!(
+      validate(&bytes),
+      Err(StructureError::Semantic(SemanticError::MissingCpusNode))
+    );
   }
 
   #[test]
@@ -194,76 +205,9 @@ mod tests {
     push_end_node(&mut bytes);
     push_end(&mut bytes);
 
-    assert_eq!(validate(&bytes), Err(StructureError::MissingMemoryNode));
-  }
-
-  #[test]
-  fn unit_address_with_reg_is_accepted() {
-    let mut bytes = Vec::new();
-
-    push_begin_node(&mut bytes, b"");
-    push_required_root_nodes(&mut bytes);
-
-    push_begin_node(&mut bytes, b"device@1000");
-    push_property(&mut bytes, REG_OFFSET, &[0, 0, 0x10, 0]);
-    push_end_node(&mut bytes);
-
-    push_end_node(&mut bytes);
-    push_end(&mut bytes);
-
-    assert_eq!(validate(&bytes), Ok(()));
-  }
-
-  #[test]
-  fn unit_address_with_ranges_is_accepted() {
-    let mut bytes = Vec::new();
-
-    push_begin_node(&mut bytes, b"");
-    push_required_root_nodes(&mut bytes);
-
-    push_begin_node(&mut bytes, b"platform-bus@4000000");
-    push_property(&mut bytes, RANGES_OFFSET, &[0, 0, 0, 1]);
-    push_end_node(&mut bytes);
-
-    push_end_node(&mut bytes);
-    push_end(&mut bytes);
-
-    assert_eq!(validate(&bytes), Ok(()));
-  }
-
-  #[test]
-  fn unit_address_without_address_property_is_rejected() {
-    let mut bytes = Vec::new();
-
-    push_begin_node(&mut bytes, b"");
-    push_required_root_nodes(&mut bytes);
-
-    push_begin_node(&mut bytes, b"device@1000");
-    push_end_node(&mut bytes);
-
-    push_end_node(&mut bytes);
-    push_end(&mut bytes);
-
-    assert_eq!(validate(&bytes), Err(StructureError::UnitAddressWithoutReg));
-  }
-
-  #[test]
-  fn nested_unit_address_without_address_property_is_rejected() {
-    let mut bytes = Vec::new();
-
-    push_begin_node(&mut bytes, b"");
-    push_required_root_nodes(&mut bytes);
-
-    push_begin_node(&mut bytes, b"soc");
-
-    push_begin_node(&mut bytes, b"device@1000");
-    push_end_node(&mut bytes);
-
-    push_end_node(&mut bytes);
-
-    push_end_node(&mut bytes);
-    push_end(&mut bytes);
-
-    assert_eq!(validate(&bytes), Err(StructureError::UnitAddressWithoutReg));
+    assert_eq!(
+      validate(&bytes),
+      Err(StructureError::Semantic(SemanticError::MissingMemoryNode))
+    );
   }
 }

@@ -30,6 +30,7 @@ use crate::{
 use name::validate;
 
 pub use name::NodeNameError;
+pub use semantic::SemanticError;
 pub use view::{Children, Descendants, Node, Properties, Property};
 
 /// An error encountered while validating an FDT structure block.
@@ -88,9 +89,6 @@ pub enum StructureError {
     /// Reason the node name is invalid.
     source: NodeNameError,
   },
-
-  /// A node has a unit-address but does not contain a `reg` property.
-  UnitAddressWithoutReg,
 
   /// A node contains more than one child with the same full node name.
   DuplicateNodeName {
@@ -175,11 +173,9 @@ pub enum StructureError {
     remaining: usize,
   },
 
-  /// The root node does not contain the required `cpus` child.
-  MissingCpusNode,
-
-  /// The root node contains no child whose node-name component is `memory`.
-  MissingMemoryNode,
+  /// The structure is syntactically valid but violates a Devicetree-wide
+  /// semantic rule.
+  Semantic(SemanticError),
 }
 
 impl From<ReadError> for StructureError {
