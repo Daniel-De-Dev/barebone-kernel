@@ -30,7 +30,7 @@ use crate::{
 use name::validate;
 
 pub use name::NodeNameError;
-pub use semantic::SemanticError;
+pub use semantic::{MemoryRange, MemoryRanges, SemanticError};
 pub use view::{Children, Descendants, Node, Properties, Property};
 
 /// An error encountered while validating an FDT structure block.
@@ -705,7 +705,7 @@ mod tests {
     let bytes = minimal_structure();
     let structure = Structure::new(&bytes, &strings()).expect("valid structure should parse");
 
-    assert_eq!(std::format!("{structure:?}"), "Structure { size: 76 }");
+    assert_eq!(std::format!("{structure:?}"), "Structure { size: 96 }");
   }
 
   // Node names

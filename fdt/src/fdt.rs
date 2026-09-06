@@ -17,7 +17,7 @@ use crate::{
   header::{HEADER_SIZE, Header},
   reservation::Reservations,
   strings::Strings,
-  structure::{Node, Structure},
+  structure::{MemoryRanges, Node, Structure},
 };
 
 /// Errors encountered while establishing the byte range occupied by a DTB.
@@ -207,6 +207,19 @@ impl<'a> Fdt<'a> {
   pub fn root(&self) -> Node<'a> {
     self.structure.root(self.strings)
   }
+
+  /// Returns an iterator over physical memory ranges described by `/memory`
+  /// nodes.
+  ///
+  /// Ranges from multiple `/memory` nodes and multiple address-size pairs
+  /// within their `reg` properties are exposed through one iterator.
+  ///
+  /// Memory reservations are not excluded from the returned ranges.
+  #[must_use]
+  pub fn memory_ranges(&self) -> MemoryRanges<'a> {
+    let root = self.root();
+    MemoryRanges::new(&root)
+  }
 }
 
 #[cfg(test)]
@@ -226,8 +239,11 @@ mod tests {
   const BOOT_CPUID_PHYS: usize = 28;
   const STRINGS_SIZE: usize = 32;
   const STRUCTURE_SIZE: usize = 36;
+  const DEVICE_TYPE_NAME_OFFSET: u32 = 0;
+  const REG_NAME_OFFSET: u32 = 12;
 
   const FDT_BEGIN_NODE: u32 = 0x1;
+  const FDT_PROP: u32 = 0x3;
   const FDT_END_NODE: u32 = 0x2;
   const FDT_END: u32 = 0x9;
 
@@ -239,19 +255,19 @@ mod tests {
   }
 
   // TODO: Centralize the test DTB layout offsets if this grows further.
-  fn minimal_blob() -> Aligned<104> {
-    let mut bytes = [0; 104];
+  fn minimal_blob() -> Aligned<164> {
+    let mut bytes = [0; 164];
 
     set_u32(&mut bytes, MAGIC, 0xd00d_feed);
-    set_u32(&mut bytes, TOTAL_SIZE, 104);
+    set_u32(&mut bytes, TOTAL_SIZE, 164);
     set_u32(&mut bytes, STRUCTURE_OFFSET, 56);
-    set_u32(&mut bytes, STRINGS_OFFSET, 104);
+    set_u32(&mut bytes, STRINGS_OFFSET, 148);
     set_u32(&mut bytes, RESERVATION_OFFSET, 40);
     set_u32(&mut bytes, VERSION, 17);
     set_u32(&mut bytes, LAST_COMP_VERSION, 16);
     set_u32(&mut bytes, BOOT_CPUID_PHYS, 0);
-    set_u32(&mut bytes, STRINGS_SIZE, 0);
-    set_u32(&mut bytes, STRUCTURE_SIZE, 48);
+    set_u32(&mut bytes, STRINGS_SIZE, 16);
+    set_u32(&mut bytes, STRUCTURE_SIZE, 92);
 
     // /
     set_u32(&mut bytes, 56, FDT_BEGIN_NODE);
@@ -264,12 +280,36 @@ mod tests {
     // /memory
     set_u32(&mut bytes, 80, FDT_BEGIN_NODE);
     bytes[84..91].copy_from_slice(b"memory\0");
-    set_u32(&mut bytes, 92, FDT_END_NODE);
+
+    // device_type = "memory"
+    set_u32(&mut bytes, 92, FDT_PROP);
+    set_u32(&mut bytes, 96, 7);
+    set_u32(&mut bytes, 100, DEVICE_TYPE_NAME_OFFSET);
+    bytes[104..111].copy_from_slice(b"memory\0");
+
+    // reg = <0x0 0x0 0x1000>
+    //
+    // Root defaults:
+    // #address-cells = 2
+    // #size-cells = 1
+    set_u32(&mut bytes, 112, FDT_PROP);
+    set_u32(&mut bytes, 116, 12);
+    set_u32(&mut bytes, 120, REG_NAME_OFFSET);
+    set_u32(&mut bytes, 124, 0);
+    set_u32(&mut bytes, 128, 0);
+    set_u32(&mut bytes, 132, 0x1000);
+
+    // /memory
+    set_u32(&mut bytes, 136, FDT_END_NODE);
 
     // /
-    set_u32(&mut bytes, 96, FDT_END_NODE);
+    set_u32(&mut bytes, 140, FDT_END_NODE);
 
-    set_u32(&mut bytes, 100, FDT_END);
+    set_u32(&mut bytes, 144, FDT_END);
+
+    // Strings block
+    bytes[148..160].copy_from_slice(b"device_type\0");
+    bytes[160..164].copy_from_slice(b"reg\0");
 
     Aligned(bytes)
   }
@@ -282,9 +322,9 @@ mod tests {
     // for the returned `Fdt`.
     let fdt = unsafe { Fdt::from_ptr(blob.0.as_ptr()) }.expect("valid DTB should parse");
 
-    assert_eq!(fdt.header.total_size(), 104);
-    assert_eq!(fdt.header.structure_range(), 56..104);
-    assert_eq!(fdt.header.strings_range(), 104..104);
+    assert_eq!(fdt.header.total_size(), 164);
+    assert_eq!(fdt.header.structure_range(), 56..148);
+    assert_eq!(fdt.header.strings_range(), 148..164);
   }
 
   #[test]
@@ -366,5 +406,20 @@ mod tests {
     let fdt = unsafe { Fdt::from_ptr(bytes.0.as_ptr()).expect("valid DTB should parse") };
 
     assert_eq!(fdt.root().name(), b"");
+  }
+
+  #[test]
+  fn memory_ranges_are_exposed() {
+    let blob = minimal_blob();
+
+    let fdt = unsafe { Fdt::from_ptr(blob.0.as_ptr()) }.expect("valid DTB should parse");
+
+    let mut ranges = fdt.memory_ranges();
+
+    let range = ranges.next().expect("memory range should exist");
+
+    assert_eq!(range.address(), 0);
+    assert_eq!(range.size(), 0x1000);
+    assert!(ranges.next().is_none());
   }
 }

@@ -30,7 +30,8 @@ pub use header::{BlockKind, HeaderError};
 pub use reader::ReadError;
 pub use strings::PropertyNameError;
 pub use structure::{
-  Children, Descendants, Node, NodeNameError, Properties, Property, SemanticError, StructureError,
+  Children, Descendants, MemoryRange, MemoryRanges, Node, NodeNameError, Properties, Property,
+  SemanticError, StructureError,
 };
 
 #[cfg(target_pointer_width = "16")]

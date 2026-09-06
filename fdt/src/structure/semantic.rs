@@ -6,6 +6,9 @@
 //! structure-block format alone.
 
 mod addressing;
+mod memory;
+
+pub use memory::{MemoryRange, MemoryRanges};
 
 use super::{Structure, StructureError, view::Node};
 use crate::strings::Strings;
@@ -54,6 +57,45 @@ pub enum SemanticError {
     /// Number of cells used for the size field.
     size_cells: u32,
   },
+
+  /// A `/memory` node does not contain the required `device_type` property.
+  MissingMemoryDeviceType,
+
+  /// A `/memory` node's `device_type` property does not encode the required
+  /// `"memory"` string.
+  InvalidMemoryDeviceType,
+
+  /// A `/memory` node does not contain the required `reg` property.
+  MissingMemoryReg,
+
+  /// A physical memory address encoded by `reg` cannot be represented as a
+  /// `u64` by this implementation.
+  MemoryAddressDoesNotFitU64,
+
+  /// A physical memory size encoded by `reg` cannot be represented as a `u64`
+  /// by this implementation.
+  MemorySizeDoesNotFitU64,
+
+  /// The root's effective `#address-cells` value is zero.
+  ///
+  /// A `/memory` range requires at least one cell to encode its physical start
+  /// address.
+  InvalidMemoryAddressCells,
+
+  /// The root's effective `#size-cells` value is zero.
+  ///
+  /// A `/memory` range requires at least one cell to encode its size.
+  InvalidMemorySizeCells,
+
+  /// A `/memory` node contains an empty `reg` property.
+  ///
+  /// A memory node must describe at least one physical memory range.
+  EmptyMemoryReg,
+
+  /// A `/memory` `reg` entry describes a range with a size of zero.
+  ///
+  /// Zero-sized ranges do not describe usable physical memory.
+  ZeroMemorySize,
 }
 
 impl From<SemanticError> for StructureError {
@@ -77,6 +119,7 @@ impl<'a> Structure<'a> {
 
     validate_required_root_nodes(&root)?;
     addressing::validate(&root)?;
+    memory::validate(&root)?;
 
     Ok(())
   }

@@ -49,6 +49,73 @@ impl SizeCells {
   }
 }
 
+/// Byte layout of one `reg` entry for a node.
+///
+/// A `reg` entry consists of an address field followed by a size field. Their
+/// widths are derived from the effective `#address-cells` and `#size-cells`
+/// values established by the parent node.
+#[derive(Clone, Copy)]
+pub(super) struct RegLayout {
+  /// Width of the address field in bytes.
+  address_size: usize,
+
+  /// Total width of one address-size pair in bytes.
+  entry_size: usize,
+}
+
+impl RegLayout {
+  /// Computes the byte layout of one `reg` entry from child-addressing
+  /// information.
+  ///
+  /// # Errors
+  ///
+  /// Returns [`SemanticError::RegEntrySizeOverflow`] if either field width or
+  /// the complete entry width cannot be represented as a [`usize`].
+  pub(super) fn new(addressing: ChildAddressing) -> Result<Self, SemanticError> {
+    let address_cells = addressing.address_cells().get();
+    let size_cells = addressing.size_cells().get();
+
+    let address_size = helpers::usize_from_u32(address_cells)
+      .checked_mul(CELL_SIZE)
+      .ok_or(SemanticError::RegEntrySizeOverflow {
+        address_cells,
+        size_cells,
+      })?;
+
+    let size_size = helpers::usize_from_u32(size_cells)
+      .checked_mul(CELL_SIZE)
+      .ok_or(SemanticError::RegEntrySizeOverflow {
+        address_cells,
+        size_cells,
+      })?;
+
+    let entry_size =
+      address_size
+        .checked_add(size_size)
+        .ok_or(SemanticError::RegEntrySizeOverflow {
+          address_cells,
+          size_cells,
+        })?;
+
+    Ok(Self {
+      address_size,
+      entry_size,
+    })
+  }
+
+  /// Returns the width of the address field in bytes.
+  #[must_use]
+  pub(super) const fn address_size(self) -> usize {
+    self.address_size
+  }
+
+  /// Returns the total width of one `reg` entry in bytes.
+  #[must_use]
+  pub(super) const fn entry_size(self) -> usize {
+    self.entry_size
+  }
+}
+
 /// Address and size encoding established by a node for its direct children.
 ///
 /// The values are taken from the node's `#address-cells` and `#size-cells`
@@ -132,27 +199,8 @@ fn validate_reg(node: &Node<'_>, parent_addressing: ChildAddressing) -> Result<(
     return Ok(());
   };
 
-  let address_cells = parent_addressing.address_cells().get();
-  let size_cells = parent_addressing.size_cells().get();
-
-  let address_cells_usize = helpers::usize_from_u32(address_cells);
-  let size_cells_usize = helpers::usize_from_u32(size_cells);
-
-  let entry_cells = address_cells_usize.checked_add(size_cells_usize).ok_or(
-    SemanticError::RegEntrySizeOverflow {
-      address_cells,
-      size_cells,
-    },
-  )?;
-
-  let entry_size =
-    entry_cells
-      .checked_mul(CELL_SIZE)
-      .ok_or(SemanticError::RegEntrySizeOverflow {
-        address_cells,
-        size_cells,
-      })?;
-
+  let layout = RegLayout::new(parent_addressing)?;
+  let entry_size = layout.entry_size();
   let length = reg.value().len();
 
   if entry_size == 0 {
@@ -313,16 +361,6 @@ mod tests {
     let root = structure.root(strings);
 
     validate(&root)
-  }
-
-  fn push_reg_cells(bytes: &mut Vec<u8>, cells: &[u32]) {
-    let mut value = Vec::new();
-
-    for cell in cells {
-      value.extend_from_slice(&cell.to_be_bytes());
-    }
-
-    push_property(bytes, REG_OFFSET, &value);
   }
 
   #[test]
