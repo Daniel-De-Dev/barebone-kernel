@@ -7,8 +7,11 @@
 
 mod addressing;
 mod memory;
+mod reg_range;
+mod reserved_memory;
 
 pub use memory::{MemoryRange, MemoryRanges};
+pub use reserved_memory::{ReservedMemoryRange, ReservedMemoryRanges};
 
 use super::{Structure, StructureError, view::Node};
 use crate::strings::Strings;
@@ -96,6 +99,42 @@ pub enum SemanticError {
   ///
   /// Zero-sized ranges do not describe usable physical memory.
   ZeroMemorySize,
+
+  /// `/reserved-memory` is missing its required `#address-cells` property.
+  MissingReservedMemoryAddressCells,
+
+  /// `/reserved-memory` is missing its required `#size-cells` property.
+  MissingReservedMemorySizeCells,
+
+  /// `/reserved-memory` is missing its required `ranges` property.
+  MissingReservedMemoryRanges,
+
+  /// `/reserved-memory` contains a non-empty `ranges` property.
+  NonEmptyReservedMemoryRanges,
+
+  /// `/reserved-memory` specifies zero address cells for its children.
+  InvalidReservedMemoryAddressCells,
+
+  /// `/reserved-memory` specifies zero size cells for its children.
+  InvalidReservedMemorySizeCells,
+
+  /// A `/reserved-memory` child contains neither `reg` nor `size`.
+  MissingReservedMemoryAllocation,
+
+  /// A `/reserved-memory` child requests an unsupported dynamic allocation.
+  UnsupportedDynamicReservedMemory,
+
+  /// A static `/reserved-memory` `reg` property contains no ranges.
+  EmptyReservedMemoryReg,
+
+  /// A `/reserved-memory` address cannot be represented as `u64`.
+  ReservedMemoryAddressDoesNotFitU64,
+
+  /// A `/reserved-memory` size cannot be represented as `u64`.
+  ReservedMemorySizeDoesNotFitU64,
+
+  /// A static `/reserved-memory` range has size zero.
+  ZeroReservedMemorySize,
 }
 
 impl From<SemanticError> for StructureError {
@@ -120,6 +159,7 @@ impl<'a> Structure<'a> {
     validate_required_root_nodes(&root)?;
     addressing::validate(&root)?;
     memory::validate(&root)?;
+    reserved_memory::validate(&root)?;
 
     Ok(())
   }
@@ -271,6 +311,31 @@ mod tests {
     assert_eq!(
       validate(&bytes),
       Err(StructureError::Semantic(SemanticError::MissingMemoryNode))
+    );
+  }
+
+  #[test]
+  fn reserved_memory_semantics_are_validated() {
+    let mut bytes = Vec::new();
+
+    push_begin_node(&mut bytes, b"");
+
+    push_required_root_nodes(&mut bytes);
+
+    // Missing required #address-cells.
+    push_begin_node(&mut bytes, b"reserved-memory");
+    push_property(&mut bytes, SIZE_CELLS_OFFSET, &1_u32.to_be_bytes());
+    push_property(&mut bytes, RANGES_OFFSET, &[]);
+    push_end_node(&mut bytes);
+
+    push_end_node(&mut bytes);
+    push_end(&mut bytes);
+
+    assert_eq!(
+      validate(&bytes),
+      Err(StructureError::Semantic(
+        SemanticError::MissingReservedMemoryAddressCells
+      ))
     );
   }
 }

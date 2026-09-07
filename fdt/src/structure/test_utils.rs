@@ -10,6 +10,7 @@ pub(super) const RANGES_OFFSET: u32 = 44;
 pub(super) const ADDRESS_CELLS_OFFSET: u32 = 51;
 pub(super) const SIZE_CELLS_OFFSET: u32 = 66;
 pub(super) const DEVICE_TYPE_OFFSET: u32 = 78;
+pub(super) const SIZE_OFFSET: u32 = 90;
 
 const STRINGS: &[u8] = b"compatible\0\
 reg\0\
@@ -18,7 +19,8 @@ child-property\0\
 ranges\0\
 #address-cells\0\
 #size-cells\0\
-device_type\0";
+device_type\0\
+size\0";
 
 pub(super) fn push_u32(bytes: &mut Vec<u8>, value: u32) {
   bytes.extend_from_slice(&value.to_be_bytes());

@@ -5,18 +5,15 @@
 //! required by the public memory-range view and provides an iterator that
 //! flattens ranges across all root `/memory` nodes.
 
+use core::fmt;
+
 use crate::structure::{Children, Node};
 
 use super::{
   SemanticError,
   addressing::{self, RegLayout},
+  reg_range::{self, RegRangeError, RegRanges},
 };
-
-/// Width of one Devicetree cell in bytes.
-const CELL_SIZE: usize = size_of::<u32>();
-
-/// Numeric radix of one 32-bit Devicetree cell.
-const CELL_RADIX: u64 = 0x1_0000_0000;
 
 /// Node-name component identifying physical-memory nodes.
 const MEMORY_NODE_NAME: &[u8] = b"memory";
@@ -31,13 +28,22 @@ const REG_PROPERTY: &[u8] = b"reg";
 ///
 /// The range describes memory reported by the Devicetree itself. Reservations
 /// are not removed from the range.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct MemoryRange {
   /// Physical start address of the range.
   address: u64,
 
   /// Size of the range in bytes.
   size: u64,
+}
+
+impl fmt::Debug for MemoryRange {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    f.debug_struct("MemoryRange")
+      .field("address", &format_args!("{:#x}", self.address))
+      .field("size", &format_args!("{:#x}", self.size))
+      .finish()
+  }
 }
 
 impl MemoryRange {
@@ -65,19 +71,9 @@ pub struct MemoryRanges<'a> {
   nodes: Children<'a>,
 
   /// Range iterator for the memory node currently being consumed.
-  current: Option<MemoryNodeRanges<'a>>,
+  current: Option<RegRanges<'a>>,
 
   /// Layout used to decode root-child `reg` entries.
-  layout: RegLayout,
-}
-
-/// Iterator over address-size pairs in one validated memory node's `reg`
-/// property.
-struct MemoryNodeRanges<'a> {
-  /// Portion of the `reg` property that has not yet been consumed.
-  bytes: &'a [u8],
-
-  /// Byte layout of each `reg` entry.
   layout: RegLayout,
 }
 
@@ -186,112 +182,12 @@ fn validate_memory_node(node: &Node<'_>, layout: RegLayout) -> Result<(), Semant
 /// Returns [`SemanticError::ZeroMemorySize`] if an entry encodes a size of
 /// zero.
 fn validate_memory_reg(bytes: &[u8], layout: RegLayout) -> Result<(), SemanticError> {
-  if bytes.is_empty() {
-    return Err(SemanticError::EmptyMemoryReg);
-  }
-
-  for entry in bytes.chunks_exact(layout.entry_size()) {
-    let (address, size) = entry.split_at(layout.address_size());
-
-    if decode_cells_u64(address).is_none() {
-      return Err(SemanticError::MemoryAddressDoesNotFitU64);
-    }
-
-    let Some(size) = decode_cells_u64(size) else {
-      return Err(SemanticError::MemorySizeDoesNotFitU64);
-    };
-
-    if size == 0 {
-      return Err(SemanticError::ZeroMemorySize);
-    }
-  }
-
-  Ok(())
-}
-
-/// Decodes a sequence of big-endian 32-bit Devicetree cells into a `u64`.
-///
-/// Cells are interpreted as digits in radix 2^32, with the first cell being
-/// the most significant.
-///
-/// Returns `None` if `bytes` does not contain a whole number of cells or if the
-/// represented value exceeds [`u64::MAX`].
-fn decode_cells_u64(bytes: &[u8]) -> Option<u64> {
-  let (cells, remainder) = bytes.as_chunks::<CELL_SIZE>();
-
-  if !remainder.is_empty() {
-    return None;
-  }
-
-  let mut value = 0_u64;
-
-  for cell in cells {
-    let cell = u64::from(u32::from_be_bytes(*cell));
-
-    value = value.checked_mul(CELL_RADIX)?;
-    value = value.checked_add(cell)?;
-  }
-
-  Some(value)
-}
-
-/// Decodes cells that have already been validated as representable by a
-/// `u64`.
-///
-/// # Panics
-///
-/// Panics if `bytes` do not encode a valid cell sequence representable by a
-/// `u64`. Memory semantic validation guarantees this invariant before this
-/// function is used.
-#[expect(
-  clippy::expect_used,
-  reason = "memory semantic validation guarantees memory values fit in u64"
-)]
-fn decode_validated_cells_u64(bytes: &[u8]) -> u64 {
-  decode_cells_u64(bytes).expect("validated memory value must fit in u64")
-}
-
-impl<'a> MemoryNodeRanges<'a> {
-  /// Creates an iterator over the `reg` entries of a validated memory node.
-  ///
-  /// # Panics
-  ///
-  /// Panics if `node` does not contain a `reg` property. Memory semantic
-  /// validation guarantees that every memory node contains `reg` before this
-  /// constructor is used.
-  #[expect(
-    clippy::expect_used,
-    reason = "memory semantic validation guarantees every memory node contains reg"
-  )]
-  fn new(node: &Node<'a>, layout: RegLayout) -> Self {
-    let bytes = node
-      .property(REG_PROPERTY)
-      .expect("validated memory node must contain reg")
-      .value();
-
-    Self { bytes, layout }
-  }
-}
-
-impl Iterator for MemoryNodeRanges<'_> {
-  type Item = MemoryRange;
-
-  fn next(&mut self) -> Option<Self::Item> {
-    if self.bytes.is_empty() {
-      return None;
-    }
-
-    let (entry, remaining) = self.bytes.split_at(self.layout.entry_size());
-
-    self.bytes = remaining;
-
-    let (address, size) = entry.split_at(self.layout.address_size());
-
-    let address = decode_validated_cells_u64(address);
-    let size = decode_validated_cells_u64(size);
-
-    Some(MemoryRange { address, size })
-  }
+  reg_range::validate(bytes, layout).map_err(|error| match error {
+    RegRangeError::Empty => SemanticError::EmptyMemoryReg,
+    RegRangeError::AddressDoesNotFitU64 => SemanticError::MemoryAddressDoesNotFitU64,
+    RegRangeError::SizeDoesNotFitU64 => SemanticError::MemorySizeDoesNotFitU64,
+    RegRangeError::ZeroSize => SemanticError::ZeroMemorySize,
+  })
 }
 
 impl<'a> MemoryRanges<'a> {
@@ -328,7 +224,10 @@ impl Iterator for MemoryRanges<'_> {
       if let Some(ranges) = self.current.as_mut()
         && let Some(range) = ranges.next()
       {
-        return Some(range);
+        return Some(MemoryRange {
+          address: range.address(),
+          size: range.size(),
+        });
       }
 
       self.current = None;
@@ -337,7 +236,15 @@ impl Iterator for MemoryRanges<'_> {
         .nodes
         .find(|node| node.name_component() == MEMORY_NODE_NAME)?;
 
-      self.current = Some(MemoryNodeRanges::new(&node, self.layout));
+      #[expect(
+        clippy::expect_used,
+        reason = "memory semantic validation guarantees every memory node contains reg"
+      )]
+      let reg = node
+        .property(REG_PROPERTY)
+        .expect("validated memory node must contain reg");
+
+      self.current = Some(RegRanges::new(reg.value(), self.layout));
     }
   }
 }
@@ -360,6 +267,19 @@ mod tests {
 
     addressing::validate(&root)?;
     validate(&root)
+  }
+
+  #[test]
+  fn memory_range_debug_uses_hex() {
+    let range = MemoryRange {
+      address: 0x8000_0000,
+      size: 0x4000_0000,
+    };
+
+    assert_eq!(
+      std::format!("{range:?}"),
+      "MemoryRange { address: 0x80000000, size: 0x40000000 }"
+    );
   }
 
   #[test]

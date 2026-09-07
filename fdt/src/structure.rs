@@ -30,7 +30,9 @@ use crate::{
 use name::validate;
 
 pub use name::NodeNameError;
-pub use semantic::{MemoryRange, MemoryRanges, SemanticError};
+pub use semantic::{
+  MemoryRange, MemoryRanges, ReservedMemoryRange, ReservedMemoryRanges, SemanticError,
+};
 pub use view::{Children, Descendants, Node, Properties, Property};
 
 /// An error encountered while validating an FDT structure block.

@@ -32,7 +32,7 @@ pub use reservation::{MemoryReservation, MemoryReservations};
 pub use strings::PropertyNameError;
 pub use structure::{
   Children, Descendants, MemoryRange, MemoryRanges, Node, NodeNameError, Properties, Property,
-  SemanticError, StructureError,
+  ReservedMemoryRange, ReservedMemoryRanges, SemanticError, StructureError,
 };
 
 #[cfg(target_pointer_width = "16")]

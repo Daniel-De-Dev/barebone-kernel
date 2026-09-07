@@ -43,6 +43,15 @@ pub struct MemoryReservation {
   size: u64,
 }
 
+impl fmt::Debug for MemoryReservation {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    f.debug_struct("MemoryReservation")
+      .field("address", &format_args!("{:#x}", self.address))
+      .field("size", &format_args!("{:#x}", self.size))
+      .finish()
+  }
+}
+
 impl MemoryReservation {
   /// Returns the physical start address of the reserved region.
   #[must_use]
@@ -149,6 +158,19 @@ mod tests {
     assert_eq!(
       std::format!("{reservations:?}"),
       "Reservations { size: 16 }"
+    );
+  }
+
+  #[test]
+  fn memory_reservation_debug_uses_hex() {
+    let reservation = MemoryReservation {
+      address: 0x8000_0000,
+      size: 0x80000,
+    };
+
+    assert_eq!(
+      std::format!("{reservation:?}"),
+      "MemoryReservation { address: 0x80000000, size: 0x80000 }"
     );
   }
 

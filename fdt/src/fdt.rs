@@ -17,7 +17,7 @@ use crate::{
   header::{HEADER_SIZE, Header},
   reservation::{MemoryReservations, Reservations},
   strings::Strings,
-  structure::{MemoryRanges, Node, Structure},
+  structure::{MemoryRanges, Node, ReservedMemoryRanges, Structure},
 };
 
 /// Errors encountered while establishing the byte range occupied by a DTB.
@@ -228,6 +228,19 @@ impl<'a> Fdt<'a> {
   #[must_use]
   pub const fn memory_reservations(&self) -> MemoryReservations<'a> {
     self.reservations.iter()
+  }
+
+  /// Returns an iterator over static physical memory ranges described under
+  /// `/reserved-memory`.
+  ///
+  /// If `/reserved-memory` is absent, the returned iterator is empty.
+  ///
+  /// Regions listed in the FDT memory reservation block are not included.
+  #[must_use]
+  pub fn reserved_memory_ranges(&self) -> ReservedMemoryRanges<'a> {
+    let root = self.root();
+
+    ReservedMemoryRanges::new(&root)
   }
 }
 
