@@ -79,7 +79,7 @@ extern "C" fn main(hart_id: usize, dtb: usize) -> ! {
 
   logging::debug!("DTB Range: {:?}", dtb_range);
 
-  let mut frames = match BootFrameAllocator::new(&fdt, kernel_range, dtb_range) {
+  let frames = match BootFrameAllocator::new(&fdt, kernel_range, dtb_range) {
     Ok(frames) => frames,
     Err(error) => {
       logging::error!(
