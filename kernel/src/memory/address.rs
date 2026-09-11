@@ -14,22 +14,43 @@ use core::fmt;
 ///
 /// Physical addresses must therefore not be treated as pointers unless the
 /// current memory configuration explicitly permits doing so.
+#[derive(Clone, Copy)]
 #[repr(transparent)]
-pub(super) struct PhysAddr(usize);
+pub(crate) struct PhysAddr(usize);
+
+impl fmt::Debug for PhysAddr {
+  fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(formatter, "{:#x}", self.0)
+  }
+}
 
 impl PhysAddr {
   /// Constructs a physical address from its machine-sized integer
   /// representation.
   ///
   /// No validation of the represented address is performed.
-  pub(super) const fn new(address: usize) -> Self {
+  #[must_use]
+  pub(crate) const fn new(address: usize) -> Self {
     Self(address)
   }
 
   /// Returns the machine-sized integer representation of this physical
   /// address.
-  pub(super) const fn as_usize(&self) -> usize {
+  #[must_use]
+  pub(crate) const fn as_usize(self) -> usize {
     self.0
+  }
+
+  /// Returns the physical address obtained by adding `bytes` to this address.
+  ///
+  /// Returns `None` if the addition would overflow the physical address
+  /// representation.
+  #[must_use]
+  pub(crate) const fn checked_add(self, bytes: usize) -> Option<Self> {
+    match self.0.checked_add(bytes) {
+      Some(address) => Some(Self(address)),
+      None => None,
+    }
   }
 }
 

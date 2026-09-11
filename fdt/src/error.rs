@@ -4,7 +4,9 @@
 //! types are preserved as variants so callers can inspect the stage at which
 //! validation failed.
 
-use crate::{fdt::BlobError, header::HeaderError, reader::ReadError, structure::StructureError};
+use crate::{
+  fdt::BlobError, header::HeaderError, reservation::ReservationError, structure::StructureError,
+};
 
 /// An error encountered while constructing or validating an FDT.
 ///
@@ -22,7 +24,7 @@ pub enum Error {
   Structure(StructureError),
 
   /// An error occurred while validating the FDT memory reservation block.
-  Reservation(ReadError),
+  Reservation(ReservationError),
 }
 
 /// Converts a blob-level error into the top-level FDT error type.
@@ -43,5 +45,12 @@ impl From<HeaderError> for Error {
 impl From<StructureError> for Error {
   fn from(error: StructureError) -> Self {
     Self::Structure(error)
+  }
+}
+
+/// Converts a reservation error into the top-level FDT error type.
+impl From<ReservationError> for Error {
+  fn from(error: ReservationError) -> Self {
+    Self::Reservation(error)
   }
 }

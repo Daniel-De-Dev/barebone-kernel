@@ -242,12 +242,21 @@ impl<'a> Fdt<'a> {
 
     ReservedMemoryRanges::new(&root)
   }
+
+  /// Returns the total size of the flattened devicetree blob in bytes.
+  #[must_use]
+  pub const fn total_size(&self) -> usize {
+    self.header.total_size()
+  }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::{error::Error, header::HeaderError, reader::ReadError, structure::StructureError};
+  use crate::{
+    error::Error, header::HeaderError, reader::ReadError, reservation::ReservationError,
+    structure::StructureError,
+  };
 
   // TODO: Look into elegantly solving the repetition of helper functions and
   // constants. (Same stuff defined in `header.rs` & `structure.rs`)
@@ -413,11 +422,11 @@ mod tests {
 
     assert_eq!(
       unsafe { Fdt::from_ptr(blob.0.as_ptr()) }.unwrap_err(),
-      Error::Reservation(ReadError::Truncated {
+      Error::Reservation(ReservationError::Read(ReadError::Truncated {
         offset: 16,
         requested: 8,
         remaining: 0,
-      })
+      }))
     );
   }
 

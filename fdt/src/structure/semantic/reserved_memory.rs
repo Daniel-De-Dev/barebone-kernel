@@ -218,12 +218,10 @@ fn validate_child(node: &Node<'_>, layout: RegLayout) -> Result<(), SemanticErro
 fn validate_reg(bytes: &[u8], layout: RegLayout) -> Result<(), SemanticError> {
   reg_range::validate(bytes, layout).map_err(|error| match error {
     RegRangeError::Empty => SemanticError::EmptyReservedMemoryReg,
-
     RegRangeError::AddressDoesNotFitU64 => SemanticError::ReservedMemoryAddressDoesNotFitU64,
-
     RegRangeError::SizeDoesNotFitU64 => SemanticError::ReservedMemorySizeDoesNotFitU64,
-
     RegRangeError::ZeroSize => SemanticError::ZeroReservedMemorySize,
+    RegRangeError::EndOverflow => SemanticError::ReservedMemoryRangeEndOverflow,
   })
 }
 
@@ -751,6 +749,37 @@ mod tests {
     assert_eq!(
       validate_structure(&bytes),
       Err(SemanticError::ZeroReservedMemorySize)
+    );
+  }
+
+  #[test]
+  fn reserved_memory_range_end_overflow_is_rejected() {
+    let mut bytes = Vec::new();
+
+    push_begin_node(&mut bytes, b"");
+
+    push_reserved_memory_begin(&mut bytes, 2, 1);
+
+    push_begin_node(&mut bytes, b"buffer@ffffffffffffffff");
+    push_reg_cells(
+      &mut bytes,
+      &[
+        // address = u64::MAX
+        0xffff_ffff,
+        0xffff_ffff,
+        // size = 1
+        0x0000_0001,
+      ],
+    );
+    push_end_node(&mut bytes);
+
+    push_end_node(&mut bytes); // reserved-memory
+    push_end_node(&mut bytes); // root
+    push_end(&mut bytes);
+
+    assert_eq!(
+      validate_structure(&bytes),
+      Err(SemanticError::ReservedMemoryRangeEndOverflow)
     );
   }
 }

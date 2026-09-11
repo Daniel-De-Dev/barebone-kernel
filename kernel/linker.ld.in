@@ -2,6 +2,16 @@ ENTRY(_start)
 
 BASE_ADDRESS = @kernelAddress@;
 
+ASSERT(
+  (BASE_ADDRESS % 4K) == 0,
+  "kernel load address must be 4 KiB aligned"
+)
+
+ASSERT(
+  _kernel_end > _kernel_start,
+  "kernel image must be non-empty"
+)
+
 MEMORY
 {
   KERNEL (rwx) : ORIGIN = @kernelAddress@, LENGTH = @kernelRegionSize@
@@ -10,6 +20,8 @@ MEMORY
 SECTIONS
 {
   . = BASE_ADDRESS;
+
+  _kernel_start = .;
 
   .text : {
     KEEP(*(.text.init))
@@ -50,4 +62,6 @@ SECTIONS
     . += 16K;
     _stack_end = .;
   } > KERNEL
+
+  _kernel_end = .;
 }

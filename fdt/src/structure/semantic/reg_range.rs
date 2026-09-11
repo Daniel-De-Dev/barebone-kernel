@@ -28,6 +28,9 @@ pub(super) enum RegRangeError {
 
   /// An entry encodes a size of zero bytes.
   ZeroSize,
+
+  /// The sum of an entry's address and size exceeds `u64::MAX`.
+  EndOverflow,
 }
 
 /// One validated address-size range decoded from a `reg` property.
@@ -68,7 +71,7 @@ pub(super) struct RegRanges<'a> {
 }
 
 /// Validates `reg` entries as non-empty, non-zero address-size ranges whose
-/// values are representable by `u64`.
+/// addresses, sizes, and exclusive end addresses are representable by `u64`.
 ///
 /// `bytes` must already consist of complete entries according to `layout`.
 ///
@@ -83,6 +86,9 @@ pub(super) struct RegRanges<'a> {
 /// [`u64::MAX`].
 ///
 /// Returns [`RegRangeError::ZeroSize`] if an entry has size zero.
+///
+/// Returns [`RegRangeError::EndOverflow`] if the represented range end exceeds
+/// [`u64::MAX`].
 pub(super) fn validate(bytes: &[u8], layout: RegLayout) -> Result<(), RegRangeError> {
   if bytes.is_empty() {
     return Err(RegRangeError::Empty);
@@ -91,9 +97,9 @@ pub(super) fn validate(bytes: &[u8], layout: RegLayout) -> Result<(), RegRangeEr
   for entry in bytes.chunks_exact(layout.entry_size()) {
     let (address, size) = entry.split_at(layout.address_size());
 
-    if decode_cells_u64(address).is_none() {
+    let Some(address) = decode_cells_u64(address) else {
       return Err(RegRangeError::AddressDoesNotFitU64);
-    }
+    };
 
     let Some(size) = decode_cells_u64(size) else {
       return Err(RegRangeError::SizeDoesNotFitU64);
@@ -101,6 +107,10 @@ pub(super) fn validate(bytes: &[u8], layout: RegLayout) -> Result<(), RegRangeEr
 
     if size == 0 {
       return Err(RegRangeError::ZeroSize);
+    }
+
+    if address.checked_add(size).is_none() {
+      return Err(RegRangeError::EndOverflow);
     }
   }
 

@@ -171,22 +171,15 @@ fn validate_memory_node(node: &Node<'_>, layout: RegLayout) -> Result<(), Semant
 ///
 /// # Errors
 ///
-/// Returns [`SemanticError::EmptyMemoryReg`] if `reg` contains no entries.
-///
-/// Returns [`SemanticError::MemoryAddressDoesNotFitU64`] if an encoded address
-/// cannot be represented as a `u64`.
-///
-/// Returns [`SemanticError::MemorySizeDoesNotFitU64`] if an encoded size cannot
-/// be represented as a `u64`.
-///
-/// Returns [`SemanticError::ZeroMemorySize`] if an entry encodes a size of
-/// zero.
+/// Returns the [`SemanticError`] corresponding to the first invalid encoded
+/// range.
 fn validate_memory_reg(bytes: &[u8], layout: RegLayout) -> Result<(), SemanticError> {
   reg_range::validate(bytes, layout).map_err(|error| match error {
     RegRangeError::Empty => SemanticError::EmptyMemoryReg,
     RegRangeError::AddressDoesNotFitU64 => SemanticError::MemoryAddressDoesNotFitU64,
     RegRangeError::SizeDoesNotFitU64 => SemanticError::MemorySizeDoesNotFitU64,
     RegRangeError::ZeroSize => SemanticError::ZeroMemorySize,
+    RegRangeError::EndOverflow => SemanticError::MemoryRangeEndOverflow,
   })
 }
 
@@ -704,6 +697,39 @@ mod tests {
     assert_eq!(
       validate_structure(&bytes),
       Err(SemanticError::ZeroMemorySize)
+    );
+  }
+  #[test]
+  fn memory_range_end_overflow_is_rejected() {
+    let mut bytes = Vec::new();
+
+    push_begin_node(&mut bytes, b"");
+
+    push_begin_node(&mut bytes, b"cpus");
+    push_end_node(&mut bytes);
+
+    push_begin_node(&mut bytes, b"memory@ffffffffffffffff");
+    push_property(&mut bytes, DEVICE_TYPE_OFFSET, b"memory\0");
+
+    push_reg_cells(
+      &mut bytes,
+      &[
+        // address = u64::MAX
+        0xffff_ffff,
+        0xffff_ffff,
+        // size = 1
+        0x0000_0001,
+      ],
+    );
+
+    push_end_node(&mut bytes);
+
+    push_end_node(&mut bytes);
+    push_end(&mut bytes);
+
+    assert_eq!(
+      validate_structure(&bytes),
+      Err(SemanticError::MemoryRangeEndOverflow)
     );
   }
 }

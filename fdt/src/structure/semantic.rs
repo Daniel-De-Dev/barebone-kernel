@@ -135,6 +135,14 @@ pub enum SemanticError {
 
   /// A static `/reserved-memory` range has size zero.
   ZeroReservedMemorySize,
+
+  /// The end address of a static `/reserved-memory` range cannot be represented
+  /// as a `u64`.
+  ReservedMemoryRangeEndOverflow,
+
+  /// The end address of a physical memory range cannot be represented as a
+  /// `u64`.
+  MemoryRangeEndOverflow,
 }
 
 impl From<SemanticError> for StructureError {
