@@ -31,7 +31,7 @@
             dramBase = 2 * GiB; # 0x80000000
           in
           {
-            inherit kernelRegionSize;
+            inherit kernelOffset kernelRegionSize;
 
             opensbiAddress = dramBase;
             kernelAddress = dramBase + kernelOffset;
@@ -48,7 +48,7 @@
             dramBase = 1 * GiB; # 0x40000000
           in
           {
-            inherit kernelRegionSize;
+            inherit kernelOffset kernelRegionSize;
 
             opensbiAddress = dramBase;
             kernelAddress = dramBase + kernelOffset;
@@ -87,7 +87,7 @@
             dramSize = 512 * MiB; # 0x20000000
           in
           {
-            inherit kernelRegionSize;
+            inherit kernelOffset kernelRegionSize;
 
             inherit dramBase dramSize;
             opensbiAddress = dramBase;

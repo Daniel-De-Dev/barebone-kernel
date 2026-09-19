@@ -37,7 +37,7 @@ use core::arch::{asm, global_asm};
 // arguments passed to `main`.
 global_asm!(
   r#"
-  .section .text.init
+  .section .boot.text, "ax"
   .global _start
 
 _start:

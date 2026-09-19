@@ -15,6 +15,7 @@
   naersk',
   name,
   loadAddress,
+  kernelOffset,
   regionSize,
   release ? true,
 }:
@@ -24,10 +25,12 @@ let
   rustTarget = "riscv64gc-unknown-none-elf";
 
   loadAddressHex = "0x${lib.toHexString loadAddress}";
+  kernelOffsetHex = "0x${lib.toHexString kernelOffset}";
   regionSizeHex = "0x${lib.toHexString regionSize}";
 
   linkerScript = pkgs.replaceVars ../kernel/linker.ld.in {
     kernelAddress = loadAddressHex;
+    kernelOffset = kernelOffsetHex;
     kernelRegionSize = regionSizeHex;
   };
 in
