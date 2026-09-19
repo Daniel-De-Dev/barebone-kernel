@@ -204,3 +204,15 @@ ASSERT(
     <= (KERNEL_PHYSICAL_BASE + KERNEL_REGION_SIZE),
   "kernel runtime footprint exceeds reserved physical region"
 )
+
+ASSERT(
+  _kernel_physical_end
+    <= ((KERNEL_PHYSICAL_BASE - KERNEL_OFFSET) + GIGAPAGE_SIZE),
+  "kernel runtime footprint crosses the bootstrap physical gigapage"
+)
+
+ASSERT(
+  _kernel_virtual_end
+    <= (KERNEL_HIGH_BASE + GIGAPAGE_SIZE),
+  "kernel runtime footprint crosses the bootstrap virtual gigapage"
+)
