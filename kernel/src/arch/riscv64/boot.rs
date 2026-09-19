@@ -14,8 +14,9 @@
 //! fits within one physical 1 GiB region and the corresponding higher-half
 //! virtual region.
 //!
-//! OpenSBI supplies the hart ID in `a0` and the physical device-tree address in
-//! `a1`. Both registers are preserved until `main` is entered.
+//! `OpenSBI` supplies the hart ID in `a0` and the physical device-tree address in
+//! `a1`. Both registers are preserved until `main` is entered. `a2` contains
+//! the kernels physical start address.
 //!
 //! The DTB's containing 1 GiB region is identity-mapped so the existing
 //! physical pointer remains usable during early initialization. A DTB crossing
@@ -57,6 +58,9 @@ global_asm!(
   .global _start
 
 _start:
+  /* Preserve the physical kernel base, as it will become innaccessible later */
+  lla a2, _kernel_physical_start
+
   lla t0, __boot_page_table
   mv t1, t0
 

@@ -26,10 +26,16 @@ use memory::{BootFrameAllocator, PhysAddr, PhysRange};
 ///
 /// This function does not return.
 #[unsafe(no_mangle)]
-extern "C" fn main(hart_id: usize, dtb: usize) -> ! {
+extern "C" fn main(hart_id: usize, dtb: usize, kernel_phys_start: usize) -> ! {
   let dtb_phys = PhysAddr::new(dtb);
+  let kernel_phys_start = PhysAddr::new(kernel_phys_start);
 
-  logging::info!("kernel entered (hart={}, dtb={:#x})", hart_id, dtb_phys);
+  logging::info!(
+    "kernel entered (hart={}, dtb={:#x}, kernel_start={:#x})",
+    hart_id,
+    dtb_phys,
+    kernel_phys_start
+  );
 
   logging::info!("initializing trap handling");
   arch::init_trap();
@@ -37,10 +43,9 @@ extern "C" fn main(hart_id: usize, dtb: usize) -> ! {
   let dtb_ptr = core::ptr::with_exposed_provenance::<u8>(dtb_phys.as_usize());
 
   // SAFETY:
-  // Address translation is not enabled, so the firmware-provided physical DTB
-  // address is directly addressable by the kernel. The boot environment
-  // guarantees that it points to a readable, contiguous DTB memory that remains
-  // valid while it is being parsed.
+  // The bootstrap page table identity-maps the physical 1 GiB region containing
+  // the firmware-provided DTB, so its physical address is temporarily also a
+  // valid virtual address. The DTB remains mapped while it is parsed here.
   let fdt = match unsafe { Fdt::from_ptr(dtb_ptr) } {
     Ok(fdt) => fdt,
     Err(error) => {
@@ -64,14 +69,17 @@ extern "C" fn main(hart_id: usize, dtb: usize) -> ! {
     logging::debug!("{:?}", memory_reservation);
   }
 
-  let kernel_range = memory::kernel_range();
+  let Some(kernel_range) = memory::kernel_range(kernel_phys_start) else {
+    logging::error!("Invalid physical kernel range; kernel startup is unrecoverable, halting");
+
+    arch::halt();
+  };
 
   logging::debug!("Kernel Range: {:?}", kernel_range);
 
   let Some(dtb_range) = PhysRange::from_start_size(dtb_phys, fdt.total_size()) else {
     logging::error!(
-      "Failed to establish DTB physical range; \
-      kernel startup is unrecoverable, halting"
+      "Failed to establish DTB physical range; kernel startup is unrecoverable, halting"
     );
 
     arch::halt();
