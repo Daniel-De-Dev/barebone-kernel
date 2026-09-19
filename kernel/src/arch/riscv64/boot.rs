@@ -14,9 +14,9 @@
 //! fits within one physical 1 GiB region and the corresponding higher-half
 //! virtual region.
 //!
-//! `OpenSBI` supplies the hart ID in `a0` and the physical device-tree address in
-//! `a1`. Both registers are preserved until `main` is entered. `a2` contains
-//! the kernels physical start address.
+//! `OpenSBI` supplies the hart ID in `a0` and the physical device-tree address
+//! in `a1`. The physical bootstrap places the kernel's physical start address
+//! in `a2`. All three values are preserved until `main` is entered.
 //!
 //! The DTB's containing 1 GiB region is identity-mapped so the existing
 //! physical pointer remains usable during early initialization. A DTB crossing
@@ -36,7 +36,7 @@ global_asm!(
   .equ GIGAPAGE_SHIFT,        30
   .equ PTE_BYTE_SHIFT,        3
   .equ VPN2_MASK,             0x1ff
-  .equ PTE_VRWXAD,             0xcf
+  .equ PTE_VRWXAD,            0xcf
   .equ SATP_MODE_SV39,        8
   .equ SATP_MODE_SHIFT,       60
 
@@ -58,7 +58,7 @@ global_asm!(
   .global _start
 
 _start:
-  /* Preserve the physical kernel base, as it will become innaccessible later */
+  /* Carry the physical kernel base into higher-half Rust through a2. */
   lla a2, _kernel_physical_start
 
   lla t0, __boot_page_table
@@ -199,7 +199,7 @@ __high_half_start:
   j .Lbss_loop
 
 .Lbss_done:
-  /* a0 and a1 still carry OpenSBI's hart ID and physical DTB address. */
+  /* a0-a2 carry the hart ID, physical DTB address, and physical kernel base. */
   tail main
   "#
 );

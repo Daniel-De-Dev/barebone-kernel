@@ -39,15 +39,16 @@ unsafe extern "C" {
 
 /// Returns the kernel's complete boot-time memory footprint in bytes.
 ///
-/// The size includes the bootstrap region and all higher-half kernel sections.
+/// The span includes the physical bootstrap reservation, higher-half kernel
+/// sections, `.bss`, boot stack, and linker-introduced alignment.
 ///
 /// # Panics
 ///
-/// Panics if the linker-provided virtual kernel boundaries are reversed.
+/// Panics if the linker does not provide a non-empty virtual kernel range.
 #[must_use]
 #[expect(
   clippy::expect_used,
-  reason = "the linker guarantees _kernel_virtual_end is after _kernel_virtual_start"
+  reason = "the linker guarantees a non-empty virtual kernel range"
 )]
 fn kernel_size() -> usize {
   let start = core::ptr::addr_of!(_kernel_virtual_start).addr();

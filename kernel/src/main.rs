@@ -20,9 +20,10 @@ use memory::{BootFrameAllocator, PhysAddr, PhysRange};
 
 /// Runs the kernel after architecture-specific initialization.
 ///
-/// `hart_id` identifies the RISC-V hart on which the kernel was entered,
-/// while `dtb` is the physical address of the device tree supplied by the
-/// previous firmware stage.
+/// `hart_id` identifies the RISC-V hart on which the kernel was entered.
+/// `dtb` is the physical address of the device tree supplied by the previous
+/// firmware stage. `kernel_phys_start` is the physical start of the kernel
+/// image preserved by the bootstrap before entering the higher half.
 ///
 /// This function does not return.
 #[unsafe(no_mangle)]
@@ -45,7 +46,8 @@ extern "C" fn main(hart_id: usize, dtb: usize, kernel_phys_start: usize) -> ! {
   // SAFETY:
   // The bootstrap page table identity-maps the physical 1 GiB region containing
   // the firmware-provided DTB, so its physical address is temporarily also a
-  // valid virtual address. The DTB remains mapped while it is parsed here.
+  // valid virtual address. Identity mapping must outlive all accesses through
+  // `fdt`
   let fdt = match unsafe { Fdt::from_ptr(dtb_ptr) } {
     Ok(fdt) => fdt,
     Err(error) => {

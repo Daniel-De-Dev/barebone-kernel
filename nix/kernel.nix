@@ -1,9 +1,9 @@
 /*
   Build the RISC-V kernel that runs as OpenSBI's S-mode next stage.
 
-  The kernel is linked for a board-specific load address and memory
-  region. The linker script ensures that the kernel's runtime memory
-  footprint fits within that region.
+  The kernel is physically loaded at a board-specific address while its normal
+  kernel sections are linked into the higher-half virtual address space. The
+  linker preserves corresponding physical load addresses for the flat image.
 
   The linked ELF is retained for debugging, and llvm-objcopy also produces
   a flat binary for loading into memory. Platform-specific boot code places

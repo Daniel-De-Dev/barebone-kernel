@@ -190,6 +190,11 @@ SECTIONS
 }
 
 ASSERT(
+  _start == KERNEL_PHYSICAL_BASE,
+  "bootstrap entry must begin at the physical kernel load address"
+)
+
+ASSERT(
   (__boot_page_table_end - __boot_page_table) == PAGE_SIZE,
   "bootstrap page table must occupy exactly one page"
 )

@@ -30,8 +30,8 @@
         Run the kernel on QEMU's RISC-V `virt` machine.
 
         OpenSBI FW_JUMP is installed as the machine firmware with `-bios`.
-        QEMU's generic loader places the raw kernel image at the address
-        for which it was linked. The loader does not change the CPU entry
+        QEMU's generic loader places the raw kernel image at its configured
+        physical load address. The loader does not change the CPU entry
         point; execution begins in OpenSBI, which later jumps to the
         kernel.
 
