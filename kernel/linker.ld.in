@@ -1,48 +1,153 @@
 ENTRY(_start)
 
-BASE_ADDRESS = @kernelAddress@;
+PAGE_SIZE = 4K;
+GIGAPAGE_SIZE = 0x40000000; /* 1 GiB */
+
+KERNEL_HIGH_BASE = 0xffffffff80000000;
+
+KERNEL_OFFSET = @kernelOffset@;
+
+KERNEL_PHYSICAL_BASE = @kernelAddress@;
+KERNEL_VIRTUAL_BASE = KERNEL_HIGH_BASE + KERNEL_OFFSET;
+
+KERNEL_REGION_SIZE = @kernelRegionSize@;
 
 ASSERT(
-  (BASE_ADDRESS % 4K) == 0,
-  "kernel load address must be 4 KiB aligned"
+  (KERNEL_OFFSET % PAGE_SIZE) == 0,
+  "kernel offset must be page aligned"
 )
 
 ASSERT(
-  _kernel_end > _kernel_start,
-  "kernel image must be non-empty"
+  KERNEL_OFFSET < GIGAPAGE_SIZE,
+  "kernel offset must stay within the bootstrap gigapage"
 )
 
-MEMORY
-{
-  KERNEL (rwx) : ORIGIN = @kernelAddress@, LENGTH = @kernelRegionSize@
-}
+ASSERT(
+  (KERNEL_HIGH_BASE % GIGAPAGE_SIZE) == 0,
+  "kernel high-half base must be 1 GiB aligned"
+)
+
+ASSERT(
+  (KERNEL_PHYSICAL_BASE % GIGAPAGE_SIZE) == KERNEL_OFFSET,
+  "kernel physical address must match its offset within the bootstrap gigapage"
+)
+
 
 SECTIONS
 {
-  . = BASE_ADDRESS;
+  /*
+   * Physical bootstrap
+   */
 
-  _kernel_start = .;
+  . = KERNEL_PHYSICAL_BASE;
 
-  .text : {
+  _kernel_physical_start = .;
+
+  /*
+   * Early bootstrap code and constants.
+   */
+  .boot : {
+    KEEP(*(.boot.text))
+    KEEP(*(.boot.text.*))
+
+    KEEP(*(.boot.rodata))
+    KEEP(*(.boot.rodata.*))
+  }
+
+  /*
+   * Reserve one 4 KiB page for the temporary Sv39 root page table.
+   */
+  . = ALIGN(PAGE_SIZE);
+
+  .boot.page_table (NOLOAD) : {
+    __boot_page_table = .;
+
+    . += PAGE_SIZE;
+
+    __boot_page_table_end = .;
+  }
+
+  . = ALIGN(PAGE_SIZE);
+
+  _boot_physical_end = .;
+
+  /*
+   * Physical space consumed before the normal higher-half kernel begins.
+   */
+  _boot_size = _boot_physical_end - KERNEL_PHYSICAL_BASE;
+
+
+  /*
+   * Higher-half kernel
+   */
+  _kernel_virtual_start = KERNEL_VIRTUAL_BASE;
+
+  . = KERNEL_VIRTUAL_BASE + _boot_size;
+
+  . = ALIGN(PAGE_SIZE);
+
+
+  /*
+   * Executable kernel code.
+   *
+   * VMA:
+   *   high-half virtual address
+   *
+   * LMA:
+   *   corresponding physical address inside the loaded kernel image
+   */
+  .text : AT(
+    KERNEL_PHYSICAL_BASE
+      + (ADDR(.text) - KERNEL_VIRTUAL_BASE)
+  ) {
+    _text_start = .;
+
     KEEP(*(.text.init))
     *(.text .text.*)
-  } > KERNEL
 
-  .rodata : {
+    _text_end = .;
+  }
+
+  . = ALIGN(PAGE_SIZE);
+
+  .rodata : AT(
+    KERNEL_PHYSICAL_BASE
+      + (ADDR(.rodata) - KERNEL_VIRTUAL_BASE)
+  ) {
+    _rodata_start = .;
+
     *(.srodata .srodata.*)
     *(.rodata .rodata.*)
-  } > KERNEL
 
-  .data : {
+    _rodata_end = .;
+  }
+
+  . = ALIGN(PAGE_SIZE);
+
+
+  .data : AT(
+    KERNEL_PHYSICAL_BASE
+      + (ADDR(.data) - KERNEL_VIRTUAL_BASE)
+  ) {
+    _data_start = .;
+
     . = ALIGN(8);
 
     __global_pointer$ = . + 0x800;
 
     *(.sdata .sdata.*)
     *(.data .data.*)
-  } > KERNEL
 
-  .bss (NOLOAD) : {
+    _data_end = .;
+  }
+
+  . = ALIGN(PAGE_SIZE);
+
+
+  .bss (NOLOAD) : AT(
+    KERNEL_PHYSICAL_BASE
+      + (ADDR(.bss) - KERNEL_VIRTUAL_BASE)
+  ) {
     . = ALIGN(8);
 
     _bss_start = .;
@@ -52,16 +157,67 @@ SECTIONS
     *(COMMON)
 
     . = ALIGN(8);
-    _bss_end = .;
-  } > KERNEL
 
-  .stack (NOLOAD) : {
+    _bss_end = .;
+  }
+
+  . = ALIGN(PAGE_SIZE);
+
+  .stack (NOLOAD) : AT(
+    KERNEL_PHYSICAL_BASE
+      + (ADDR(.stack) - KERNEL_VIRTUAL_BASE)
+  ) {
     . = ALIGN(16);
 
     _stack_start = .;
-    . += 16K;
-    _stack_end = .;
-  } > KERNEL
 
-  _kernel_end = .;
+    . += 16K;
+
+    _stack_end = .;
+  }
+
+  . = ALIGN(PAGE_SIZE);
+
+  _kernel_virtual_end = .;
+
+
+  /*
+   * Translate the final virtual offset back into its physical equivalent.
+   */
+  _kernel_physical_end =
+    KERNEL_PHYSICAL_BASE
+      + (_kernel_virtual_end - KERNEL_VIRTUAL_BASE);
 }
+
+ASSERT(
+  _start == KERNEL_PHYSICAL_BASE,
+  "bootstrap entry must begin at the physical kernel load address"
+)
+
+ASSERT(
+  (__boot_page_table_end - __boot_page_table) == PAGE_SIZE,
+  "bootstrap page table must occupy exactly one page"
+)
+
+ASSERT(
+  _kernel_physical_end > _kernel_physical_start,
+  "kernel image must be non-empty"
+)
+
+ASSERT(
+  _kernel_physical_end
+    <= (KERNEL_PHYSICAL_BASE + KERNEL_REGION_SIZE),
+  "kernel runtime footprint exceeds reserved physical region"
+)
+
+ASSERT(
+  _kernel_physical_end
+    <= ((KERNEL_PHYSICAL_BASE - KERNEL_OFFSET) + GIGAPAGE_SIZE),
+  "kernel runtime footprint crosses the bootstrap physical gigapage"
+)
+
+ASSERT(
+  _kernel_virtual_end
+    <= (KERNEL_HIGH_BASE + GIGAPAGE_SIZE),
+  "kernel runtime footprint crosses the bootstrap virtual gigapage"
+)

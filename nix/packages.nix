@@ -33,6 +33,7 @@
             ;
 
           loadAddress = board.kernelAddress;
+          inherit (board) kernelOffset;
           regionSize = board.kernelRegionSize;
         };
 

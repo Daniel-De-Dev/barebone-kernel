@@ -12,7 +12,7 @@ mod address;
 mod frame;
 
 pub(crate) use address::PhysAddr;
-pub(crate) use frame::{BootFrameAllocator, BootFrameAllocatorError, PhysFrame};
+pub(crate) use frame::BootFrameAllocator;
 
 /// A non-empty half-open physical address range `[start, end)`.
 ///
@@ -28,34 +28,45 @@ pub(crate) struct PhysRange {
 }
 
 unsafe extern "C" {
-  /// Linker-defined symbol marking the start of the kernel's boot-time
-  /// physical memory range.
-  static _kernel_start: u8;
+  /// Linker-defined symbol marking the start of the kernel's complete virtual
+  /// boot-time footprint.
+  static _kernel_virtual_start: u8;
 
-  /// Linker-defined symbol marking the end of the kernel's boot-time
-  /// physical memory range.
-  static _kernel_end: u8;
+  /// Linker-defined symbol marking the end of the kernel's complete virtual
+  /// boot-time footprint.
+  static _kernel_virtual_end: u8;
+}
+
+/// Returns the kernel's complete boot-time memory footprint in bytes.
+///
+/// The span includes the physical bootstrap reservation, higher-half kernel
+/// sections, `.bss`, boot stack, and linker-introduced alignment.
+///
+/// # Panics
+///
+/// Panics if the linker does not provide a non-empty virtual kernel range.
+#[must_use]
+#[expect(
+  clippy::expect_used,
+  reason = "the linker guarantees a non-empty virtual kernel range"
+)]
+fn kernel_size() -> usize {
+  let start = core::ptr::addr_of!(_kernel_virtual_start).addr();
+  let end = core::ptr::addr_of!(_kernel_virtual_end).addr();
+
+  end
+    .checked_sub(start)
+    .expect("linker must produce a non-empty kernel virtual range")
 }
 
 /// Returns the physical memory range reserved for the kernel at boot.
 ///
-/// The range is derived from the linker-defined [`_kernel_start`] and
-/// [`_kernel_end`] boundaries and includes the linked kernel sections and
-/// statically reserved boot stack.
-///
-/// # Panics
-///
-/// Panics if the linker-provided boundaries do not describe a non-empty range.
+/// `physical_start` is supplied by the architecture bootstrap because the
+/// higher-half kernel cannot infer its board-specific physical load address
+/// from its virtual location alone.
 #[must_use]
-#[expect(
-  clippy::expect_used,
-  reason = "the linker script places _kernel_end strictly after _kernel_start"
-)]
-pub(crate) fn kernel_range() -> PhysRange {
-  let start = PhysAddr::new(core::ptr::addr_of!(_kernel_start).addr());
-  let end = PhysAddr::new(core::ptr::addr_of!(_kernel_end).addr());
-
-  PhysRange::new(start, end).expect("linker must produce a non-empty kernel image")
+pub(crate) fn kernel_range(physical_start: PhysAddr) -> Option<PhysRange> {
+  PhysRange::from_start_size(physical_start, kernel_size())
 }
 
 impl PhysRange {

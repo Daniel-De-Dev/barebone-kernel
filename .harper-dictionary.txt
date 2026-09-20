@@ -18,10 +18,12 @@ RV64
 SBI
 SPL
 StarFive
+Sv39
 VisionFive
 devicetree
 devicetrees
 representable
+stackless
 u32
 usize
 v0
