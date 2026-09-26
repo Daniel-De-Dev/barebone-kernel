@@ -3,15 +3,15 @@
 //! This module provides the common physical-memory vocabulary used by the
 //! kernel's memory-management code.
 //!
-//! Physical addresses are represented by [`PhysAddr`], while [`PhysRange`]
-//! represents non-empty half-open regions of physical address space. Physical
-//! frame representation and boot-time frame allocation are implemented by the
-//! [`frame`] submodule.
+//! Physical and virtual addresses are represented by [`PhysAddr`] and
+//! [`VirtAddr`], while [`PhysRange`] represents non-empty half-open regions of
+//! physical address space. Physical frame representation and boot-time frame
+//! allocation are implemented by the [`frame`] submodule.
 
 mod address;
 mod frame;
 
-pub(crate) use address::PhysAddr;
+pub(crate) use address::{PhysAddr, VirtAddr};
 pub(crate) use frame::BootFrameAllocator;
 
 /// A non-empty half-open physical address range `[start, end)`.

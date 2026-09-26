@@ -41,13 +41,26 @@ extern "C" fn main(hart_id: usize, dtb: usize, kernel_phys_start: usize) -> ! {
   logging::info!("initializing trap handling");
   arch::init_trap();
 
-  let dtb_ptr = core::ptr::with_exposed_provenance::<u8>(dtb_phys.as_usize());
+  let dtb_virtual = match arch::map_bootstrap_fdt(dtb_phys) {
+    Ok(address) => address,
+    Err(error) => {
+      logging::error!(
+        "Failed to establish higher-half DTB mapping ({error:?}); \
+        kernel startup is unrecoverable, halting"
+      );
+
+      arch::halt();
+    }
+  };
+
+  logging::debug!("DTB higher-half alias: {:#x}", dtb_virtual.as_usize(),);
+
+  let dtb_ptr = core::ptr::with_exposed_provenance::<u8>(dtb_virtual.as_usize());
 
   // SAFETY:
-  // The bootstrap page table identity-maps the physical 1 GiB region containing
-  // the firmware-provided DTB, so its physical address is temporarily also a
-  // valid virtual address. Identity mapping must outlive all accesses through
-  // `fdt`
+  // `map_bootstrap_fdt` establishes a readable higher-half mapping containing
+  // the DTB. This mapping must remain valid and unmodified for as long as `fdt`
+  // and values borrowing from it remain alive.
   let fdt = match unsafe { Fdt::from_ptr(dtb_ptr) } {
     Ok(fdt) => fdt,
     Err(error) => {

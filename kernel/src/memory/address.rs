@@ -66,5 +66,20 @@ impl fmt::LowerHex for PhysAddr {
 /// instruction fetches and memory accesses under the current address-translation
 /// configuration.
 ///
-/// Will be refined once needed.
-pub(super) struct VirtAddr(usize);
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+pub(crate) struct VirtAddr(usize);
+
+impl VirtAddr {
+  /// Constructs a virtual address from its machine-sized representation.
+  #[must_use]
+  pub(crate) const fn new(address: usize) -> Self {
+    Self(address)
+  }
+
+  /// Returns the machine-sized representation of this virtual address.
+  #[must_use]
+  pub(crate) const fn as_usize(self) -> usize {
+    self.0
+  }
+}
