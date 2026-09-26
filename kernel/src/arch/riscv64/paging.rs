@@ -5,10 +5,13 @@
 
 use core::{arch::asm, ptr};
 
-use crate::memory::{PhysAddr, VirtAddr};
+use crate::memory::{PhysAddr, PhysFrame, VirtAddr};
 
 /// Lowest canonical virtual address in the upper half of Sv39.
 const SV39_HIGH_HALF_BASE: usize = 0xffff_ffc0_0000_0000;
+
+/// First root-table index belonging to the canonical Sv39 upper half.
+const SV39_HIGH_HALF_VPN2: usize = (SV39_HIGH_HALF_BASE >> GIGAPAGE_SHIFT) & VPN_MASK;
 
 /// Number of low address bits forming a page offset.
 const PAGE_SHIFT: usize = 12;
@@ -37,8 +40,14 @@ const PTE_VALID: usize = 1 << 0;
 /// PTE bit permitting reads through a leaf mapping.
 const PTE_READ: usize = 1 << 1;
 
+/// PTE bit permitting writes through a leaf mapping.
+const PTE_WRITE: usize = 1 << 2;
+
 /// PTE bit recording that a leaf mapping has been accessed.
 const PTE_ACCESSED: usize = 1 << 6;
+
+/// PTE bit recording that a writable leaf mapping has been modified.
+const PTE_DIRTY: usize = 1 << 7;
 
 /// Flags for a read-only boot-time FDT leaf mapping.
 const BOOT_FDT_PTE_FLAGS: usize = PTE_VALID | PTE_READ | PTE_ACCESSED;
@@ -47,13 +56,27 @@ const BOOT_FDT_PTE_FLAGS: usize = PTE_VALID | PTE_READ | PTE_ACCESSED;
 const BOOT_FDT_WINDOW_BASE: usize = SV39_HIGH_HALF_BASE;
 
 /// Root-table index containing the start of the boot-time FDT window.
-const BOOT_FDT_WINDOW_VPN2: usize = (BOOT_FDT_WINDOW_BASE >> GIGAPAGE_SHIFT) & VPN_MASK;
+const BOOT_FDT_WINDOW_VPN2: usize = SV39_HIGH_HALF_VPN2;
 
 /// Number of consecutive level-2 leaves available to the boot-time FDT window.
 ///
 /// Five leaves cover the largest `u32`-sized FDT even when it begins at the
 /// end of its first 1 GiB region.
 const BOOT_FDT_WINDOW_GIGAPAGES: usize = 5;
+
+/// Root-table index reserved for temporary access to physical frames.
+///
+/// VPN[2] 511 corresponds to the final 1 GiB of the canonical Sv39
+/// higher-half address space. The bootstrap kernel occupies VPN[2] 510,
+/// while the temporary FDT window begins at VPN[2] 256.
+const BOOT_FRAME_WINDOW_VPN2: usize = VPN_MASK;
+
+/// First virtual address of the temporary physical-frame access window.
+const BOOT_FRAME_WINDOW_BASE: usize =
+  SV39_HIGH_HALF_BASE + ((BOOT_FRAME_WINDOW_VPN2 - SV39_HIGH_HALF_VPN2) * GIGAPAGE_SIZE);
+
+/// Flags used by the temporary physical-frame mapping.
+const BOOT_FRAME_PTE_FLAGS: usize = PTE_VALID | PTE_READ | PTE_WRITE | PTE_ACCESSED | PTE_DIRTY;
 
 /// Bit position of `satp.MODE` on RV64.
 const SATP_MODE_SHIFT: usize = 60;
@@ -132,6 +155,135 @@ fn active_root_table() -> Result<PhysAddr, PagingError> {
   let root_ppn = satp & SATP_PPN_MASK;
 
   Ok(PhysAddr::new(root_ppn << PAGE_SHIFT))
+}
+
+/// Executes `operation` while `frame` is temporarily accessible through the
+/// bootstrap physical-frame window.
+///
+/// The temporary mapping uses a single Sv39 level-2 leaf. The physical 1 GiB
+/// region containing `frame` is mapped at [`BOOT_FRAME_WINDOW_BASE`], and the
+/// returned virtual address preserves the frame's offset within that region.
+///
+/// The mapping exists only while `operation` executes and is removed before
+/// this function returns.
+///
+/// The active root page table must itself still be accessible through the
+/// bootstrap identity mapping.
+///
+/// # Errors
+///
+/// Returns [`PagingError::UnexpectedAddressTranslationMode`] if Sv39 is not
+/// active, [`PagingError::RootEntryInUse`] if the reserved temporary root entry
+/// is already occupied, or
+/// [`PagingError::PhysicalAddressNotRepresentable`] if the frame cannot be
+/// represented by Sv39.
+#[expect(
+  clippy::arithmetic_side_effects,
+  reason = "the root index and frame offset are bounded by the Sv39 page-table and gigapage sizes"
+)]
+fn with_bootstrap_frame<R>(
+  frame: PhysFrame,
+  operation: impl FnOnce(VirtAddr) -> R,
+) -> Result<R, PagingError> {
+  let boot_root = active_root_table()?;
+
+  let entry_offset = BOOT_FRAME_WINDOW_VPN2 * PTE_SIZE;
+
+  let entry_address = PhysAddr::new(boot_root.as_usize() + entry_offset);
+
+  let entry_pointer = ptr::with_exposed_provenance_mut::<usize>(entry_address.as_usize());
+
+  // SAFETY:
+  // The bootstrap root page table is contained inside the physical kernel
+  // gigapage, which remains identity-mapped while this helper is used.
+  let existing = unsafe { ptr::read_volatile(entry_pointer) };
+
+  if existing != 0 {
+    return Err(PagingError::RootEntryInUse {
+      index: BOOT_FRAME_WINDOW_VPN2,
+      entry: existing,
+    });
+  }
+
+  let frame_address = frame.start_address();
+
+  if frame_address.as_usize() > MAX_PHYSICAL_ADDRESS {
+    return Err(PagingError::PhysicalAddressNotRepresentable {
+      address: frame_address,
+    });
+  }
+
+  let physical_base = PhysAddr::new(frame_address.as_usize() & !GIGAPAGE_MASK);
+
+  let entry = leaf_entry(physical_base, BOOT_FRAME_PTE_FLAGS)?;
+
+  // SAFETY:
+  // The reserved scratch root entry was verified to be empty and the active
+  // bootstrap root remains identity-mapped.
+  unsafe {
+    ptr::write_volatile(entry_pointer, entry);
+  }
+
+  let frame_offset = frame_address.as_usize() & GIGAPAGE_MASK;
+
+  let virtual_address = VirtAddr::new(BOOT_FRAME_WINDOW_BASE + frame_offset);
+
+  flush_address(virtual_address);
+
+  let result = operation(virtual_address);
+
+  // SAFETY:
+  // This is the same bootstrap root entry installed above, and no other code
+  // may use the reserved scratch entry while this function executes.
+  unsafe {
+    ptr::write_volatile(entry_pointer, 0);
+  }
+
+  flush_address(virtual_address);
+
+  Ok(result)
+}
+
+/// Constructs an Sv39 leaf page-table entry mapping `physical_address`.
+///
+/// `flags` must contain the desired Sv39 leaf permissions.
+///
+/// # Errors
+///
+/// Returns [`PagingError::PhysicalAddressNotRepresentable`] if
+/// `physical_address` cannot be encoded in an Sv39 PTE.
+const fn leaf_entry(physical_address: PhysAddr, flags: usize) -> Result<usize, PagingError> {
+  if physical_address.as_usize() > MAX_PHYSICAL_ADDRESS {
+    return Err(PagingError::PhysicalAddressNotRepresentable {
+      address: physical_address,
+    });
+  }
+
+  let physical_page_number = physical_address.as_usize() >> PAGE_SHIFT;
+
+  Ok((physical_page_number << PTE_PPN_SHIFT) | flags)
+}
+
+/// Invalidates the current hart's cached translation for `address`.
+fn flush_address(address: VirtAddr) {
+  // SAFETY:
+  // `sfence.vma` only affects address-translation state on the current hart.
+  unsafe {
+    asm!(
+      "sfence.vma {address}, zero",
+      address = in(reg) address.as_usize(),
+      options(nostack),
+    );
+  }
+}
+
+/// Invalidates all cached address translations on the current hart.
+fn flush_all() {
+  // SAFETY:
+  // `sfence.vma` only affects address-translation state on the current hart.
+  unsafe {
+    asm!("sfence.vma zero, zero", options(nostack));
+  }
 }
 
 /// Maps the physical region containing `dtb` into a higher-half boot window.
@@ -214,9 +366,7 @@ pub(crate) fn map_bootstrap_fdt(dtb: PhysAddr) -> Result<VirtAddr, PagingError> 
 
     let entry_address = PhysAddr::new(boot_root.as_usize() + entry_offset);
 
-    let physical_page_number = physical_address.as_usize() >> PAGE_SHIFT;
-
-    let entry = (physical_page_number << PTE_PPN_SHIFT) | BOOT_FDT_PTE_FLAGS;
+    let entry = leaf_entry(physical_address, BOOT_FDT_PTE_FLAGS)?;
 
     let entry_pointer = ptr::with_exposed_provenance_mut::<usize>(entry_address.as_usize());
 
@@ -228,12 +378,7 @@ pub(crate) fn map_bootstrap_fdt(dtb: PhysAddr) -> Result<VirtAddr, PagingError> 
     }
   }
 
-  // SAFETY:
-  // `sfence.vma` makes the preceding PTE updates visible to address translation
-  // on the current hart.
-  unsafe {
-    asm!("sfence.vma zero, zero", options(nostack));
-  }
+  flush_all();
 
   let dtb_offset = dtb.as_usize() & GIGAPAGE_MASK;
 

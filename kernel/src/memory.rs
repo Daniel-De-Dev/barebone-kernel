@@ -12,7 +12,7 @@ mod address;
 mod frame;
 
 pub(crate) use address::{PhysAddr, VirtAddr};
-pub(crate) use frame::BootFrameAllocator;
+pub(crate) use frame::{BootFrameAllocator, PhysFrame};
 
 /// A non-empty half-open physical address range `[start, end)`.
 ///
