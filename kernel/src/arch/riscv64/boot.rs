@@ -17,10 +17,6 @@
 //! `OpenSBI` supplies the hart ID in `a0` and the physical device-tree address
 //! in `a1`. The physical bootstrap places the kernel's physical start address
 //! in `a2`. All three values are preserved until `main` is entered.
-//!
-//! The DTB's containing 1 GiB region is identity-mapped so the existing
-//! physical pointer remains usable during early initialization. A DTB crossing
-//! a 1 GiB boundary would require mapping the following region as well.
 
 use core::arch::global_asm;
 
@@ -114,23 +110,6 @@ _start:
 
   add t5, t0, t5
   sd t4, 0(t5)
-
-  /*
-   * Keep the firmware DTB directly accessible. If it shares the kernel gigapage
-   * this simply rewrites the same identity entry.
-   */
-  srli t1, a1, GIGAPAGE_SHIFT
-  slli t1, t1, GIGAPAGE_SHIFT
-
-  srli t2, t1, 2
-  ori t2, t2, PTE_VRWXAD
-
-  srli t5, t1, GIGAPAGE_SHIFT
-  andi t5, t5, VPN2_MASK
-  slli t5, t5, PTE_BYTE_SHIFT
-
-  add t5, t0, t5
-  sd t2, 0(t5)
 
   /* Order the PTE stores before the MMU begins walking the new table. */
   sfence.vma zero, zero
