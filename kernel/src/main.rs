@@ -41,7 +41,11 @@ extern "C" fn main(hart_id: usize, dtb: usize, kernel_phys_start: usize) -> ! {
   logging::info!("initializing trap handling");
   arch::init_trap();
 
-  let dtb_virtual = match arch::map_bootstrap_fdt(dtb_phys) {
+  // SAFETY:
+  // The architecture bootstrap enters `main` with the complete active Sv39 root
+  // page table writably identity-mapped. No other hart or code has modified the
+  // reserved bootstrap FDT window before this call.
+  let dtb_virtual = match unsafe { arch::map_bootstrap_fdt(dtb_phys) } {
     Ok(address) => address,
     Err(error) => {
       logging::error!(

@@ -49,9 +49,6 @@ const VPN_MASK: usize = 0x1ff;
 /// Bit offset of the physical page number within an Sv39 PTE.
 const PTE_PPN_SHIFT: usize = 10;
 
-/// Size in bytes of one Sv39 page-table entry.
-const PTE_SIZE: usize = size_of::<u64>();
-
 /// PTE bit marking an entry as valid.
 const PTE_VALID: usize = 1 << 0;
 
@@ -163,7 +160,7 @@ impl Sv39PageTable {
     &self,
     virtual_address: VirtAddr,
     physical_frame: PhysFrame,
-    permissions: usize,
+    permissions: usize, // TODO: Make permissions explicitly a type
     frames: &mut BootFrameAllocator<'_, '_>,
   ) -> Result<(), PagingError> {
     let address = virtual_address.as_usize();
@@ -328,6 +325,12 @@ fn active_root_table() -> Result<PhysAddr, PagingError> {
 /// The active root page table must itself still be accessible through the
 /// bootstrap identity mapping.
 ///
+/// # Safety
+///
+/// The active Sv39 root page table must be completely and writably
+/// identity-mapped. The reserved bootstrap frame-window root entry must not be
+/// modified concurrently while this function executes.
+///
 /// # Errors
 ///
 /// Returns [`PagingError::UnexpectedAddressTranslationMode`] if Sv39 is not
@@ -339,22 +342,19 @@ fn active_root_table() -> Result<PhysAddr, PagingError> {
   clippy::arithmetic_side_effects,
   reason = "the root index and frame offset are bounded by the Sv39 page-table and gigapage sizes"
 )]
-fn with_bootstrap_frame<R>(
+unsafe fn with_bootstrap_frame<R>(
   frame: PhysFrame,
   operation: impl FnOnce(VirtAddr) -> R,
 ) -> Result<R, PagingError> {
   let boot_root = active_root_table()?;
 
-  let entry_offset = BOOT_FRAME_WINDOW_VPN2 * PTE_SIZE;
-
-  let entry_address = PhysAddr::new(boot_root.as_usize() + entry_offset);
-
-  let entry_pointer = ptr::with_exposed_provenance_mut::<usize>(entry_address.as_usize());
+  let boot_root_virtual = VirtAddr::new(boot_root.as_usize());
 
   // SAFETY:
-  // The bootstrap root page table is contained inside the physical kernel
-  // gigapage, which remains identity-mapped while this helper is used.
-  let existing = unsafe { ptr::read_volatile(entry_pointer) };
+  // By this function's safety contract, `boot_root_virtual` maps the complete
+  // readable active Sv39 root page table for the duration of this operation.
+  let existing =
+    unsafe { read_mapped_page_table_entry(boot_root_virtual, BOOT_FRAME_WINDOW_VPN2)? };
 
   if existing != 0 {
     return Err(PagingError::RootEntryInUse {
@@ -376,10 +376,10 @@ fn with_bootstrap_frame<R>(
   let entry = page_table_entry(physical_base, BOOT_FRAME_PTE_FLAGS)?;
 
   // SAFETY:
-  // The reserved scratch root entry was verified to be empty and the active
-  // bootstrap root remains identity-mapped.
+  // By this function's safety contract, `boot_root_virtual` maps the complete
+  // writable active Sv39 root page table for the duration of this operation.
   unsafe {
-    ptr::write_volatile(entry_pointer, entry);
+    write_mapped_page_table_entry(boot_root_virtual, BOOT_FRAME_WINDOW_VPN2, entry)?;
   }
 
   let frame_offset = frame_address.as_usize() & GIGAPAGE_MASK;
@@ -391,10 +391,11 @@ fn with_bootstrap_frame<R>(
   let result = operation(virtual_address);
 
   // SAFETY:
-  // This is the same bootstrap root entry installed above, and no other code
-  // may use the reserved scratch entry while this function executes.
+  // By this function's safety contract, `boot_root_virtual` maps the complete
+  // writable active Sv39 root page table. This function exclusively owns the
+  // bootstrap frame-window entry until it is cleared here.
   unsafe {
-    ptr::write_volatile(entry_pointer, 0);
+    write_mapped_page_table_entry(boot_root_virtual, BOOT_FRAME_WINDOW_VPN2, 0)?;
   }
 
   flush_address(virtual_address);
@@ -429,16 +430,23 @@ const fn page_table_entry(physical_address: PhysAddr, flags: usize) -> Result<us
 /// Returns an error if `frame` cannot be accessed through the bootstrap
 /// physical-frame window.
 fn zero_page_table(frame: PhysFrame) -> Result<(), PagingError> {
-  with_bootstrap_frame(frame, |address| {
+  let operation = |address: VirtAddr| {
     let table_pointer = ptr::with_exposed_provenance_mut::<PageTable>(address.as_usize());
 
     // SAFETY:
-    // `address` is a temporary mapping of the complete page-aligned physical
-    // frame, and an all-zero Sv39 page table contains only invalid entries.
+    // `with_bootstrap_frame` maps the complete physical frame at `address`
+    // for the duration of this operation. `frame` is a newly allocated
+    // page-table frame and therefore may be initialized exclusively here.
     unsafe {
       ptr::write_bytes(table_pointer, 0, 1);
     }
-  })
+  };
+
+  // SAFETY:
+  // Page-table construction currently runs while the bootstrap Sv39 root is
+  // active and writably identity-mapped. The paging module exclusively owns
+  // the reserved bootstrap frame-window entry while this operation executes.
+  unsafe { with_bootstrap_frame(frame, operation) }
 }
 
 /// Reads one entry from a physical page-table frame.
@@ -448,20 +456,18 @@ fn zero_page_table(frame: PhysFrame) -> Result<(), PagingError> {
 /// Returns an error if the frame cannot be temporarily mapped or `index` is
 /// outside the page table.
 fn read_page_table_entry(frame: PhysFrame, index: usize) -> Result<usize, PagingError> {
-  with_bootstrap_frame(frame, |address| {
-    let table_pointer = ptr::with_exposed_provenance::<PageTable>(address.as_usize());
-
+  let operation = |address: VirtAddr| {
     // SAFETY:
-    // The temporary mapping covers the complete physical page-table frame and
-    // remains valid for the duration of this closure.
-    let table = unsafe { &*table_pointer };
+    // `with_bootstrap_frame` maps the complete physical page-table frame at
+    // `address` for the duration of this operation.
+    unsafe { read_mapped_page_table_entry(address, index) }
+  };
 
-    let Some(entry) = table.entries.get(index) else {
-      return Err(PagingError::PageTableIndexOutOfRange { index });
-    };
-
-    Ok(*entry)
-  })?
+  // SAFETY:
+  // Page-table construction currently runs while the bootstrap Sv39 root is
+  // active and writably identity-mapped. The paging module exclusively owns
+  // the reserved bootstrap frame-window entry while this operation executes.
+  unsafe { with_bootstrap_frame(frame, operation) }?
 }
 
 /// Writes one entry in a physical page-table frame.
@@ -471,22 +477,18 @@ fn read_page_table_entry(frame: PhysFrame, index: usize) -> Result<usize, Paging
 /// Returns an error if the frame cannot be temporarily mapped or `index` is
 /// outside the page table.
 fn write_page_table_entry(frame: PhysFrame, index: usize, entry: usize) -> Result<(), PagingError> {
-  with_bootstrap_frame(frame, |address| {
-    let table_pointer = ptr::with_exposed_provenance_mut::<PageTable>(address.as_usize());
-
+  let operation = |address: VirtAddr| {
     // SAFETY:
-    // The temporary mapping covers the complete physical page-table frame and
-    // remains valid exclusively for the duration of this closure.
-    let table = unsafe { &mut *table_pointer };
+    // `with_bootstrap_frame` maps the complete writable physical page-table
+    // frame at `address` for the duration of this operation.
+    unsafe { write_mapped_page_table_entry(address, index, entry) }
+  };
 
-    let Some(slot) = table.entries.get_mut(index) else {
-      return Err(PagingError::PageTableIndexOutOfRange { index });
-    };
-
-    *slot = entry;
-
-    Ok(())
-  })?
+  // SAFETY:
+  // Page-table construction currently runs while the bootstrap Sv39 root is
+  // active and writably identity-mapped. The paging module exclusively owns
+  // the reserved bootstrap frame-window entry while this operation executes.
+  unsafe { with_bootstrap_frame(frame, operation) }?
 }
 
 /// Allocates and initializes one empty physical page-table frame.
@@ -577,14 +579,87 @@ fn flush_all() {
   }
 }
 
+/// Reads one entry from a page table that is currently mapped at `address`.
+///
+/// # Safety
+///
+/// `address` must be page-aligned and must map a complete readable
+/// [`PageTable`] for the duration of this operation.
+///
+/// # Errors
+///
+/// Returns [`PagingError::PageTableIndexOutOfRange`] if `index` does not
+/// identify an entry in the page table.
+unsafe fn read_mapped_page_table_entry(
+  address: VirtAddr,
+  index: usize,
+) -> Result<usize, PagingError> {
+  if index >= PAGE_TABLE_ENTRIES {
+    return Err(PagingError::PageTableIndexOutOfRange { index });
+  }
+
+  let table_pointer = ptr::with_exposed_provenance::<PageTable>(address.as_usize());
+
+  // SAFETY:
+  // The caller guarantees that `address` maps a complete `PageTable`, and the
+  // bounds check above guarantees that `index` identifies one of its entries.
+  let entry_pointer = unsafe { table_pointer.cast::<usize>().add(index) };
+
+  // SAFETY:
+  // `entry_pointer` refers to a valid entry within the mapped page table.
+  Ok(unsafe { ptr::read_volatile(entry_pointer) })
+}
+
+/// Writes one entry in a page table that is currently mapped at `address`.
+///
+/// # Safety
+///
+/// `address` must be page-aligned and must map a complete writable
+/// [`PageTable`] for the duration of this operation. The table must not be
+/// concurrently accessed in a way that conflicts with this write.
+///
+/// # Errors
+///
+/// Returns [`PagingError::PageTableIndexOutOfRange`] if `index` does not
+/// identify an entry in the page table.
+unsafe fn write_mapped_page_table_entry(
+  address: VirtAddr,
+  index: usize,
+  value: usize,
+) -> Result<(), PagingError> {
+  if index >= PAGE_TABLE_ENTRIES {
+    return Err(PagingError::PageTableIndexOutOfRange { index });
+  }
+
+  let table_pointer = ptr::with_exposed_provenance_mut::<PageTable>(address.as_usize());
+
+  // SAFETY:
+  // The caller guarantees that `address` maps a complete writable `PageTable`,
+  // and the bounds check above guarantees that `index` identifies one of its
+  // entries.
+  let entry_pointer = unsafe { table_pointer.cast::<usize>().add(index) };
+
+  // SAFETY:
+  // `entry_pointer` points to a writable PTE within the mapped page table.
+  unsafe {
+    ptr::write_volatile(entry_pointer, value);
+  }
+
+  Ok(())
+}
+
 /// Maps the physical region containing `dtb` into a higher-half boot window.
 ///
 /// The mapping preserves `dtb`'s offset within its first 1 GiB physical region,
 /// so the returned virtual address refers to the same byte as `dtb`. The window
 /// consists of consecutive read-only, non-executable Sv39 level-2 leaves.
 ///
-/// The active root table must be accessible through an identity mapping while
-/// this function executes.
+/// # Safety
+///
+/// The active Sv39 root page table must be completely and writably
+/// identity-mapped for the duration of this function. No other hart or code
+/// may concurrently modify the root-table entries used by the bootstrap FDT
+/// window.
 ///
 /// # Errors
 ///
@@ -598,8 +673,10 @@ fn flush_all() {
             the satp PPN, and the DTB address is validated before \
             physical-address arithmetic"
 )]
-pub(crate) fn map_bootstrap_fdt(dtb: PhysAddr) -> Result<VirtAddr, PagingError> {
+pub(crate) unsafe fn map_bootstrap_fdt(dtb: PhysAddr) -> Result<VirtAddr, PagingError> {
   let boot_root = active_root_table()?;
+
+  let boot_root_virtual = VirtAddr::new(boot_root.as_usize());
 
   if dtb.as_usize() > MAX_PHYSICAL_ADDRESS {
     return Err(PagingError::PhysicalAddressNotRepresentable { address: dtb });
@@ -613,16 +690,13 @@ pub(crate) fn map_bootstrap_fdt(dtb: PhysAddr) -> Result<VirtAddr, PagingError> 
    */
   for window_index in 0..BOOT_FDT_WINDOW_GIGAPAGES {
     let root_index = BOOT_FDT_WINDOW_VPN2 + window_index;
-    let entry_offset = root_index * PTE_SIZE;
-
-    let entry_address = PhysAddr::new(boot_root.as_usize() + entry_offset);
-
-    let entry_pointer = ptr::with_exposed_provenance::<usize>(entry_address.as_usize());
 
     // SAFETY:
-    // The active bootstrap root is located inside the physical kernel
-    // gigapage, which remains identity-mapped while this function executes.
-    let existing = unsafe { ptr::read_volatile(entry_pointer) };
+    // `boot_root_virtual` is the identity-mapped virtual address of the active
+    // bootstrap Sv39 root table, which remains mapped and readable while this
+    // function executes. `root_index` refers to an entry within that complete
+    // page table.
+    let existing = unsafe { read_mapped_page_table_entry(boot_root_virtual, root_index)? };
 
     if existing != 0 {
       return Err(PagingError::RootEntryInUse {
@@ -653,19 +727,16 @@ pub(crate) fn map_bootstrap_fdt(dtb: PhysAddr) -> Result<VirtAddr, PagingError> 
 
     let physical_address = PhysAddr::new(physical_base.as_usize() + physical_offset);
 
-    let entry_offset = root_index * PTE_SIZE;
-
-    let entry_address = PhysAddr::new(boot_root.as_usize() + entry_offset);
-
     let entry = page_table_entry(physical_address, BOOT_FDT_PTE_FLAGS)?;
 
-    let entry_pointer = ptr::with_exposed_provenance_mut::<usize>(entry_address.as_usize());
-
     // SAFETY:
-    // The active bootstrap root remains identity-mapped, and the selected
-    // entry was verified to be unused before any mappings were installed.
+    // `boot_root_virtual` is the identity-mapped virtual address of the active
+    // bootstrap Sv39 root table, which remains mapped and writable while this
+    // function executes. `root_index` refers to an entry within that complete
+    // page table, and this entry was verified to be unused before any bootstrap
+    // FDT mappings were installed.
     unsafe {
-      ptr::write_volatile(entry_pointer, entry);
+      write_mapped_page_table_entry(boot_root_virtual, root_index, entry)?;
     }
   }
 
