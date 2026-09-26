@@ -5,16 +5,34 @@
 
 use core::{arch::asm, ptr};
 
-use crate::memory::{PhysAddr, PhysFrame, VirtAddr};
+use crate::memory::{BootFrameAllocator, PhysAddr, PhysFrame, VirtAddr};
+
+/// Sign bit of an Sv39 virtual address.
+const SV39_SIGN_BIT: usize = 38;
 
 /// Lowest canonical virtual address in the upper half of Sv39.
-const SV39_HIGH_HALF_BASE: usize = 0xffff_ffc0_0000_0000;
+const SV39_HIGH_HALF_BASE: usize = usize::MAX << SV39_SIGN_BIT;
 
 /// First root-table index belonging to the canonical Sv39 upper half.
 const SV39_HIGH_HALF_VPN2: usize = (SV39_HIGH_HALF_BASE >> GIGAPAGE_SHIFT) & VPN_MASK;
 
+/// First virtual address outside the canonical Sv39 lower half.
+const SV39_LOW_HALF_END: usize = 1usize << SV39_SIGN_BIT;
+
 /// Number of low address bits forming a page offset.
 const PAGE_SHIFT: usize = 12;
+
+/// Size in bytes of one Sv39 page.
+const PAGE_SIZE: usize = 1 << PAGE_SHIFT;
+
+/// Mask selecting an offset within one Sv39 page.
+const PAGE_MASK: usize = PAGE_SIZE - 1;
+
+/// Bit offset of an Sv39 level-1 virtual page number.
+const MEGAPAGE_SHIFT: usize = 21;
+
+/// Number of entries in one Sv39 page table.
+const PAGE_TABLE_ENTRIES: usize = 512;
 
 /// Bit offset of an Sv39 level-2 virtual page number.
 const GIGAPAGE_SHIFT: usize = 30;
@@ -43,11 +61,17 @@ const PTE_READ: usize = 1 << 1;
 /// PTE bit permitting writes through a leaf mapping.
 const PTE_WRITE: usize = 1 << 2;
 
+/// PTE bit permitting instruction fetches through a leaf mapping.
+const PTE_EXECUTE: usize = 1 << 3;
+
 /// PTE bit recording that a leaf mapping has been accessed.
 const PTE_ACCESSED: usize = 1 << 6;
 
 /// PTE bit recording that a writable leaf mapping has been modified.
 const PTE_DIRTY: usize = 1 << 7;
+
+/// Bits distinguishing an Sv39 leaf from a non-leaf entry.
+const PTE_LEAF_MASK: usize = PTE_READ | PTE_WRITE | PTE_EXECUTE;
 
 /// Flags for a read-only boot-time FDT leaf mapping.
 const BOOT_FDT_PTE_FLAGS: usize = PTE_VALID | PTE_READ | PTE_ACCESSED;
@@ -99,6 +123,94 @@ const PHYSICAL_ADDRESS_BITS: usize = PHYSICAL_PAGE_NUMBER_BITS + PAGE_SHIFT;
 /// Largest physical byte address representable by Sv39.
 const MAX_PHYSICAL_ADDRESS: usize = (1usize << PHYSICAL_ADDRESS_BITS) - 1;
 
+/// One 4 KiB Sv39 page table containing 512 64-bit entries.
+#[repr(C, align(4096))]
+struct PageTable {
+  /// Raw Sv39 page-table entries.
+  entries: [usize; PAGE_TABLE_ENTRIES],
+}
+
+/// An Sv39 address space being constructed by the kernel.
+struct Sv39PageTable {
+  /// Physical frame containing the level-2 root table.
+  root: PhysFrame,
+}
+
+impl Sv39PageTable {
+  /// Allocates a new empty Sv39 address space.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error if no root frame can be allocated or initialized.
+  fn new(frames: &mut BootFrameAllocator<'_, '_>) -> Result<Self, PagingError> {
+    let root = allocate_page_table(frames)?;
+
+    Ok(Self { root })
+  }
+
+  /// Maps one 4 KiB virtual page to `physical_frame`.
+  ///
+  /// `permissions` contains the Sv39 `R`, `W`, and `X` bits for the leaf.
+  /// Valid/accessed state is added automatically, as is the dirty bit for
+  /// writable mappings.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error if the virtual address is invalid or unaligned, physical
+  /// frames required for intermediate tables cannot be allocated, an existing
+  /// intermediate entry is malformed, or the virtual page is already mapped.
+  fn map_page(
+    &self,
+    virtual_address: VirtAddr,
+    physical_frame: PhysFrame,
+    permissions: usize,
+    frames: &mut BootFrameAllocator<'_, '_>,
+  ) -> Result<(), PagingError> {
+    let address = virtual_address.as_usize();
+
+    if address & PAGE_MASK != 0 {
+      return Err(PagingError::VirtualAddressNotPageAligned { address });
+    }
+
+    if address >= SV39_LOW_HALF_END && address < SV39_HIGH_HALF_BASE {
+      return Err(PagingError::VirtualAddressNotCanonical { address });
+    }
+
+    if permissions & !PTE_LEAF_MASK != 0
+      || permissions & PTE_LEAF_MASK == 0
+      || permissions & PTE_WRITE != 0 && permissions & PTE_READ == 0
+    {
+      return Err(PagingError::InvalidLeafPermissions { permissions });
+    }
+
+    let vpn2 = (address >> GIGAPAGE_SHIFT) & VPN_MASK;
+    let vpn1 = (address >> MEGAPAGE_SHIFT) & VPN_MASK;
+    let vpn0 = (address >> PAGE_SHIFT) & VPN_MASK;
+
+    let level_1 = next_table(self.root, vpn2, frames)?;
+    let level_0 = next_table(level_1, vpn1, frames)?;
+
+    let existing = read_page_table_entry(level_0, vpn0)?;
+
+    if existing != 0 {
+      return Err(PagingError::PageAlreadyMapped {
+        address,
+        entry: existing,
+      });
+    }
+
+    let mut flags = PTE_VALID | PTE_ACCESSED | permissions;
+
+    if permissions & PTE_WRITE != 0 {
+      flags |= PTE_DIRTY;
+    }
+
+    let entry = page_table_entry(physical_frame.start_address(), flags)?;
+
+    write_page_table_entry(level_0, vpn0, entry)
+  }
+}
+
 /// Errors produced while inspecting or modifying Sv39 paging state.
 #[derive(Debug)]
 pub(crate) enum PagingError {
@@ -121,6 +233,52 @@ pub(crate) enum PagingError {
   PhysicalAddressNotRepresentable {
     /// Physical address outside the Sv39 representable range.
     address: PhysAddr,
+  },
+
+  /// No physical frame remained for a required page table.
+  OutOfPhysicalFrames,
+
+  /// A virtual address supplied for a 4 KiB mapping was not page-aligned.
+  VirtualAddressNotPageAligned {
+    /// Unaligned virtual address.
+    address: usize,
+  },
+
+  /// A virtual address is not canonical under Sv39.
+  VirtualAddressNotCanonical {
+    /// Non-canonical virtual address.
+    address: usize,
+  },
+
+  /// A page-table entry expected to point to the next level was malformed or
+  /// was already a leaf mapping.
+  InvalidIntermediateEntry {
+    /// Index containing the unexpected entry.
+    index: usize,
+
+    /// Raw unexpected entry.
+    entry: usize,
+  },
+
+  /// A requested leaf virtual page already had a mapping.
+  PageAlreadyMapped {
+    /// Virtual page that was already mapped.
+    address: usize,
+
+    /// Existing raw leaf entry.
+    entry: usize,
+  },
+
+  /// A page-table index was outside the 512-entry table.
+  PageTableIndexOutOfRange {
+    /// Invalid entry index.
+    index: usize,
+  },
+
+  /// The requested Sv39 leaf permissions were invalid.
+  InvalidLeafPermissions {
+    /// Requested raw R/W/X permission bits.
+    permissions: usize,
   },
 }
 
@@ -215,7 +373,7 @@ fn with_bootstrap_frame<R>(
 
   let physical_base = PhysAddr::new(frame_address.as_usize() & !GIGAPAGE_MASK);
 
-  let entry = leaf_entry(physical_base, BOOT_FRAME_PTE_FLAGS)?;
+  let entry = page_table_entry(physical_base, BOOT_FRAME_PTE_FLAGS)?;
 
   // SAFETY:
   // The reserved scratch root entry was verified to be empty and the active
@@ -244,15 +402,15 @@ fn with_bootstrap_frame<R>(
   Ok(result)
 }
 
-/// Constructs an Sv39 leaf page-table entry mapping `physical_address`.
+/// Constructs an Sv39 page-table entry pointing at `physical_address`.
 ///
-/// `flags` must contain the desired Sv39 leaf permissions.
+/// `flags` contains the desired Sv39 PTE flag bits.
 ///
 /// # Errors
 ///
 /// Returns [`PagingError::PhysicalAddressNotRepresentable`] if
 /// `physical_address` cannot be encoded in an Sv39 PTE.
-const fn leaf_entry(physical_address: PhysAddr, flags: usize) -> Result<usize, PagingError> {
+const fn page_table_entry(physical_address: PhysAddr, flags: usize) -> Result<usize, PagingError> {
   if physical_address.as_usize() > MAX_PHYSICAL_ADDRESS {
     return Err(PagingError::PhysicalAddressNotRepresentable {
       address: physical_address,
@@ -262,6 +420,139 @@ const fn leaf_entry(physical_address: PhysAddr, flags: usize) -> Result<usize, P
   let physical_page_number = physical_address.as_usize() >> PAGE_SHIFT;
 
   Ok((physical_page_number << PTE_PPN_SHIFT) | flags)
+}
+
+/// Clears every entry in a physical page-table frame.
+///
+/// # Errors
+///
+/// Returns an error if `frame` cannot be accessed through the bootstrap
+/// physical-frame window.
+fn zero_page_table(frame: PhysFrame) -> Result<(), PagingError> {
+  with_bootstrap_frame(frame, |address| {
+    let table_pointer = ptr::with_exposed_provenance_mut::<PageTable>(address.as_usize());
+
+    // SAFETY:
+    // `address` is a temporary mapping of the complete page-aligned physical
+    // frame, and an all-zero Sv39 page table contains only invalid entries.
+    unsafe {
+      ptr::write_bytes(table_pointer, 0, 1);
+    }
+  })
+}
+
+/// Reads one entry from a physical page-table frame.
+///
+/// # Errors
+///
+/// Returns an error if the frame cannot be temporarily mapped or `index` is
+/// outside the page table.
+fn read_page_table_entry(frame: PhysFrame, index: usize) -> Result<usize, PagingError> {
+  with_bootstrap_frame(frame, |address| {
+    let table_pointer = ptr::with_exposed_provenance::<PageTable>(address.as_usize());
+
+    // SAFETY:
+    // The temporary mapping covers the complete physical page-table frame and
+    // remains valid for the duration of this closure.
+    let table = unsafe { &*table_pointer };
+
+    let Some(entry) = table.entries.get(index) else {
+      return Err(PagingError::PageTableIndexOutOfRange { index });
+    };
+
+    Ok(*entry)
+  })?
+}
+
+/// Writes one entry in a physical page-table frame.
+///
+/// # Errors
+///
+/// Returns an error if the frame cannot be temporarily mapped or `index` is
+/// outside the page table.
+fn write_page_table_entry(frame: PhysFrame, index: usize, entry: usize) -> Result<(), PagingError> {
+  with_bootstrap_frame(frame, |address| {
+    let table_pointer = ptr::with_exposed_provenance_mut::<PageTable>(address.as_usize());
+
+    // SAFETY:
+    // The temporary mapping covers the complete physical page-table frame and
+    // remains valid exclusively for the duration of this closure.
+    let table = unsafe { &mut *table_pointer };
+
+    let Some(slot) = table.entries.get_mut(index) else {
+      return Err(PagingError::PageTableIndexOutOfRange { index });
+    };
+
+    *slot = entry;
+
+    Ok(())
+  })?
+}
+
+/// Allocates and initializes one empty physical page-table frame.
+///
+/// # Errors
+///
+/// Returns [`PagingError::OutOfPhysicalFrames`] if no frame remains, or an
+/// error if the allocated frame cannot be initialized through the temporary
+/// mapping window.
+fn allocate_page_table(frames: &mut BootFrameAllocator<'_, '_>) -> Result<PhysFrame, PagingError> {
+  let Some(frame) = frames.allocate() else {
+    return Err(PagingError::OutOfPhysicalFrames);
+  };
+
+  zero_page_table(frame)?;
+
+  Ok(frame)
+}
+
+/// Returns the page-table frame referenced by a valid non-leaf entry.
+///
+/// # Errors
+///
+/// Returns [`PagingError::InvalidIntermediateEntry`] if `entry` is not a valid
+/// Sv39 non-leaf entry.
+const fn intermediate_frame(index: usize, entry: usize) -> Result<PhysFrame, PagingError> {
+  if entry & PTE_VALID == 0 || entry & PTE_LEAF_MASK != 0 {
+    return Err(PagingError::InvalidIntermediateEntry { index, entry });
+  }
+
+  let physical_page_number = (entry >> PTE_PPN_SHIFT) & SATP_PPN_MASK;
+
+  let physical_address = PhysAddr::new(physical_page_number << PAGE_SHIFT);
+
+  let Some(frame) = PhysFrame::from_start(physical_address) else {
+    return Err(PagingError::InvalidIntermediateEntry { index, entry });
+  };
+
+  Ok(frame)
+}
+
+/// Returns the child table referenced by `parent[index]`, allocating it when
+/// the entry is currently empty.
+///
+/// # Errors
+///
+/// Returns an error if the parent cannot be accessed, no physical frame remains,
+/// or an existing entry is not a valid non-leaf page-table pointer.
+fn next_table(
+  parent: PhysFrame,
+  index: usize,
+  frames: &mut BootFrameAllocator<'_, '_>,
+) -> Result<PhysFrame, PagingError> {
+  let entry = read_page_table_entry(parent, index)?;
+
+  if entry != 0 {
+    return intermediate_frame(index, entry);
+  }
+
+  let child = allocate_page_table(frames)?;
+
+  let entry = page_table_entry(child.start_address(), PTE_VALID)?;
+
+  write_page_table_entry(parent, index, entry)?;
+
+  Ok(child)
 }
 
 /// Invalidates the current hart's cached translation for `address`.
@@ -366,7 +657,7 @@ pub(crate) fn map_bootstrap_fdt(dtb: PhysAddr) -> Result<VirtAddr, PagingError> 
 
     let entry_address = PhysAddr::new(boot_root.as_usize() + entry_offset);
 
-    let entry = leaf_entry(physical_address, BOOT_FDT_PTE_FLAGS)?;
+    let entry = page_table_entry(physical_address, BOOT_FDT_PTE_FLAGS)?;
 
     let entry_pointer = ptr::with_exposed_provenance_mut::<usize>(entry_address.as_usize());
 
