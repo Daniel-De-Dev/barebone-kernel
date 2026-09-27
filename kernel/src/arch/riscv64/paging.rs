@@ -3,7 +3,11 @@
 //! This module provides address-translation helpers and temporary mappings used
 //! while the kernel is running under its bootstrap Sv39 address space.
 
-use core::{arch::asm, ptr};
+use core::{
+  arch::asm,
+  ptr,
+  sync::atomic::{AtomicBool, Ordering},
+};
 
 use crate::memory::{AllocatedFrame, BootFrameAllocator, PhysAddr, PhysFrame, VirtAddr};
 
@@ -140,24 +144,40 @@ pub(crate) struct BootstrapPaging {
   root_virtual: VirtAddr,
 }
 
+/// Tracks whether the bootstrap paging capability has already been claimed.
+///
+/// Once set, this flag is never cleared, preventing construction of more than
+/// one [`BootstrapPaging`] capability during the lifetime of the kernel.
+static BOOTSTRAP_PAGING_CLAIMED: AtomicBool = AtomicBool::new(false);
+
 impl BootstrapPaging {
-  /// Claims exclusive control of the active bootstrap Sv39 address space.
+  /// Claims the bootstrap paging capability for the active Sv39 address space.
+  ///
+  /// This capability can be claimed only once. A successful claim remains
+  /// permanent even if the returned [`BootstrapPaging`] value is later dropped.
   ///
   /// # Safety
   ///
   /// The active Sv39 root page table must be completely and writably
-  /// identity-mapped. No other [`BootstrapPaging`] capability may exist for the
-  /// same active address space. The paging entries reserved by this module must
-  /// not be modified by any other code or hart while this capability exists,
-  /// and the active root must not be replaced except by consuming this
-  /// capability.
+  /// identity-mapped. The paging entries reserved by this module must not be
+  /// modified by any other code or hart while this capability exists, and the
+  /// active root must not be replaced except by consuming this capability.
   ///
   /// # Errors
   ///
   /// Returns [`PagingError::UnexpectedAddressTranslationMode`] if the active
-  /// address-translation mode is not Sv39.
+  /// address-translation mode is not Sv39, or
+  /// [`PagingError::BootstrapPagingAlreadyClaimed`] if the bootstrap paging
+  /// capability has already been claimed.
   pub(crate) unsafe fn claim() -> Result<Self, PagingError> {
     let root = active_root_table()?;
+
+    if BOOTSTRAP_PAGING_CLAIMED
+      .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+      .is_err()
+    {
+      return Err(PagingError::BootstrapPagingAlreadyClaimed);
+    }
 
     Ok(Self {
       root_virtual: VirtAddr::new(root.as_usize()),
@@ -601,6 +621,9 @@ pub(crate) enum PagingError {
     /// Requested raw R/W/X permission bits.
     permissions: usize,
   },
+
+  /// The bootstrap paging capability has already been claimed.
+  BootstrapPagingAlreadyClaimed,
 }
 
 /// Returns the physical address of the active Sv39 root page table.
