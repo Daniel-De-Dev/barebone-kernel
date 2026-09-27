@@ -7,7 +7,7 @@ mod boot;
 mod paging;
 mod trap;
 
-pub(crate) use paging::map_bootstrap_fdt;
+pub(crate) use paging::BootstrapPaging;
 pub(crate) use trap::init as init_trap;
 
 use core::arch::asm;

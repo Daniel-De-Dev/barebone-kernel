@@ -42,15 +42,27 @@ extern "C" fn main(hart_id: usize, dtb: usize, kernel_phys_start: usize) -> ! {
   arch::init_trap();
 
   // SAFETY:
-  // The architecture bootstrap enters `main` with the complete active Sv39 root
-  // page table writably identity-mapped. No other hart or code has modified the
-  // reserved bootstrap FDT window before this call.
-  let dtb_virtual = match unsafe { arch::map_bootstrap_fdt(dtb_phys) } {
+  // Architecture bootstrap enters `main` with the complete active Sv39 root
+  // page table writably identity-mapped. No other hart or code modifies the
+  // paging entries reserved for bootstrap use while this capability exists.
+  let mut bootstrap_paging = match unsafe { arch::BootstrapPaging::claim() } {
+    Ok(paging) => paging,
+    Err(error) => {
+      logging::error!(
+        "Failed to claim bootstrap paging state ({error:?}); \
+        kernel startup is unrecoverable, halting"
+      );
+
+      arch::halt();
+    }
+  };
+
+  let dtb_virtual = match bootstrap_paging.map_fdt(dtb_phys) {
     Ok(address) => address,
     Err(error) => {
       logging::error!(
         "Failed to establish higher-half DTB mapping ({error:?}); \
-        kernel startup is unrecoverable, halting"
+         kernel startup is unrecoverable, halting"
       );
 
       arch::halt();
@@ -62,9 +74,10 @@ extern "C" fn main(hart_id: usize, dtb: usize, kernel_phys_start: usize) -> ! {
   let dtb_ptr = core::ptr::with_exposed_provenance::<u8>(dtb_virtual.as_usize());
 
   // SAFETY:
-  // `map_bootstrap_fdt` establishes a readable higher-half mapping containing
-  // the DTB. This mapping must remain valid and unmodified for as long as `fdt`
-  // and values borrowing from it remain alive.
+  // `BootstrapPaging::map_fdt` established a readable mapping containing the
+  // complete DTB. The bootstrap paging capability remains alive, so that
+  // mapping remains valid and unmodified while `fdt` and values borrowing from
+  // it are used.
   let fdt = match unsafe { Fdt::from_ptr(dtb_ptr) } {
     Ok(fdt) => fdt,
     Err(error) => {

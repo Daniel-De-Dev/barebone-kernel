@@ -22,7 +22,7 @@ compile_error!("the boot frame allocator currently requires a 64-bit target");
 
 use fdt::{Fdt, MemoryRanges};
 
-use super::{PhysFrame, align_down, align_up};
+use super::{AllocatedFrame, PhysFrame, align_down, align_up};
 use crate::memory::{PhysAddr, PhysRange};
 
 /// Errors that can prevent construction of a boot frame allocator.
@@ -176,7 +176,7 @@ impl<'fdt, 'dtb> BootFrameAllocator<'fdt, 'dtb> {
     clippy::expect_used,
     reason = "CurrentMemoryRange guarantees that candidate cursors are frame-aligned and can contain a complete frame"
   )]
-  pub(crate) fn allocate(&mut self) -> Option<PhysFrame> {
+  pub(crate) fn allocate(&mut self) -> Option<AllocatedFrame> {
     loop {
       if self.current.is_none() && !self.advance_memory_range() {
         return None;
@@ -218,7 +218,7 @@ impl<'fdt, 'dtb> BootFrameAllocator<'fdt, 'dtb> {
         });
       }
 
-      return Some(frame);
+      return Some(AllocatedFrame::new(frame));
     }
   }
 
