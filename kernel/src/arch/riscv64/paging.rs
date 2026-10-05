@@ -9,7 +9,7 @@ use core::{
   sync::atomic::{AtomicBool, Ordering},
 };
 
-use crate::memory::{AllocatedFrame, BootFrameAllocator, PhysAddr, PhysFrame, VirtAddr};
+use crate::memory::{AllocatedFrame, BootFrameAllocator, PhysAddr, PhysFrame, VirtAddr, VirtRange};
 
 /// Sign bit of an Sv39 virtual address.
 const SV39_SIGN_BIT: usize = 38;
@@ -483,6 +483,82 @@ impl Sv39PageTable {
     Ok(Self { root })
   }
 
+  /// Maps every 4 KiB page covering `virtual_range` to consecutive physical
+  /// frames beginning at `physical_start`.
+  ///
+  /// The virtual start must be page-aligned. The exclusive end may be
+  /// unaligned, its final partial page is mapped in full.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error if the virtual start is unaligned, the range includes
+  /// non-canonical Sv39 addresses, the physical span is not representable, or
+  /// an individual page cannot be mapped.
+  ///
+  /// Address spans are validated before any entries are installed. Allocation
+  /// or mapping conflicts can still fail partway through; mappings already
+  /// installed by this call remain in the address space.
+  #[expect(
+    clippy::arithmetic_side_effects,
+    reason = "VirtRange bounds are ordered, and page offsets fit within the \
+              validated virtual and physical spans"
+  )]
+  fn map_range(
+    &mut self,
+    bootstrap: &mut BootstrapPaging,
+    virtual_range: VirtRange,
+    physical_start: PhysFrame,
+    permissions: usize,
+    frames: &mut BootFrameAllocator<'_, '_>,
+  ) -> Result<(), PagingError> {
+    let start = virtual_range.start().as_usize();
+    let end = virtual_range.end().as_usize();
+
+    if start & PAGE_MASK != 0 {
+      return Err(PagingError::VirtualAddressNotPageAligned { address: start });
+    }
+
+    if (SV39_LOW_HALF_END..SV39_HIGH_HALF_BASE).contains(&start) {
+      return Err(PagingError::VirtualAddressNotCanonical { address: start });
+    }
+
+    if start < SV39_LOW_HALF_END && end > SV39_LOW_HALF_END {
+      return Err(PagingError::VirtualAddressNotCanonical {
+        address: SV39_LOW_HALF_END,
+      });
+    }
+
+    let size = end - start;
+    let page_count = size.div_ceil(PAGE_SIZE);
+    let last_offset = (page_count - 1) * PAGE_SIZE;
+    let physical_base = physical_start.start_address();
+
+    physical_base
+      .checked_add(last_offset)
+      .filter(|address| address.as_usize() <= MAX_PHYSICAL_ADDRESS)
+      .ok_or(PagingError::PhysicalRangeNotRepresentable {
+        start: physical_base,
+        size,
+      })?;
+
+    for page_index in 0..page_count {
+      let offset = page_index * PAGE_SIZE;
+      let virtual_address = VirtAddr::new(start + offset);
+      let physical_address = PhysAddr::new(physical_base.as_usize() + offset);
+
+      let Some(frame) = PhysFrame::from_start(physical_address) else {
+        return Err(PagingError::PhysicalRangeNotRepresentable {
+          start: physical_base,
+          size,
+        });
+      };
+
+      self.map_page(bootstrap, virtual_address, frame, permissions, frames)?;
+    }
+
+    Ok(())
+  }
+
   /// Maps one 4 KiB virtual page to `physical_frame`.
   ///
   /// `permissions` contains the Sv39 `R`, `W`, and `X` bits for the leaf.
@@ -574,6 +650,16 @@ pub(crate) enum PagingError {
   PhysicalAddressNotRepresentable {
     /// Physical address outside the Sv39 representable range.
     address: PhysAddr,
+  },
+
+  /// The physical frames covering a requested byte range cannot all be
+  /// represented by Sv39, or computing the final frame address would overflow.
+  PhysicalRangeNotRepresentable {
+    /// Physical start address corresponding to the virtual range start.
+    start: PhysAddr,
+
+    /// Requested range size in bytes before rounding up to complete pages.
+    size: usize,
   },
 
   /// No physical frame remained for a required page table.
