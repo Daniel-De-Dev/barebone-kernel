@@ -70,6 +70,12 @@ impl fmt::LowerHex for PhysAddr {
 #[repr(transparent)]
 pub(crate) struct VirtAddr(usize);
 
+impl fmt::Debug for VirtAddr {
+  fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(formatter, "{:#x}", self.0)
+  }
+}
+
 impl VirtAddr {
   /// Constructs a virtual address from its machine-sized representation.
   #[must_use]
@@ -81,5 +87,16 @@ impl VirtAddr {
   #[must_use]
   pub(crate) const fn as_usize(self) -> usize {
     self.0
+  }
+
+  /// Returns the virtual address obtained by adding `bytes`.
+  ///
+  /// Returns `None` if the addition would overflow.
+  #[must_use]
+  pub(crate) const fn checked_add(self, bytes: usize) -> Option<Self> {
+    match self.0.checked_add(bytes) {
+      Some(address) => Some(Self(address)),
+      None => None,
+    }
   }
 }

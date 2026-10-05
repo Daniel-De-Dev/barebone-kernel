@@ -16,7 +16,7 @@ mod memory;
 
 use core::panic::PanicInfo;
 use fdt::Fdt;
-use memory::{BootFrameAllocator, PhysAddr, PhysRange};
+use memory::{BootFrameAllocator, PhysAddr, PhysRange, kernel_sections};
 
 /// Runs the kernel after architecture-specific initialization.
 ///
@@ -106,6 +106,10 @@ extern "C" fn main(hart_id: usize, dtb: usize, kernel_phys_start: usize) -> ! {
 
     arch::halt();
   };
+
+  let kernel_sections = kernel_sections();
+
+  logging::debug!("{:#?}", kernel_sections);
 
   logging::debug!("Kernel Range: {:?}", kernel_range);
 
