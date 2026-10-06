@@ -3,9 +3,9 @@
 use core::{fmt, ptr};
 
 use super::{
-  BOOT_FRAME_WINDOW_BASE, BootstrapPaging, GIGAPAGE_SHIFT, GIGAPAGE_SIZE, MEGAPAGE_SHIFT,
-  PAGE_MASK, PAGE_SHIFT, PAGE_SIZE, PTE_ACCESSED, PTE_DIRTY, PTE_EXECUTE, PTE_READ, PTE_VALID,
-  PTE_WRITE, PagingError, Sv39PageTable, VPN_MASK, activate_root, flush_address, page_table_entry,
+  BOOT_FRAME_WINDOW_BASE, BootstrapPaging, FRAME_WINDOW_PTE_FLAGS, GIGAPAGE_SHIFT, GIGAPAGE_SIZE,
+  MEGAPAGE_SHIFT, PAGE_MASK, PAGE_SHIFT, PAGE_SIZE, PTE_EXECUTE, PTE_READ, PTE_WRITE, PagingError,
+  Sv39PageTable, VPN_MASK, activate_root, flush_address, page_table_entry,
 };
 use crate::memory::{
   AllocatedFrame, BootFrameAllocator, KernelSections, PhysAddr, PhysFrame, PhysRange, VirtAddr,
@@ -76,8 +76,7 @@ impl BootstrapPaging {
   /// Only pages covering `dtb_physical` are retained at the existing
   /// `dtb_virtual` alias. No bootstrap or identity mappings are copied.
   /// All mappings are built before the root is switched, and the bootstrap
-  /// capability cannot be reclaimed afterward. No separate prepared capability
-  /// is exposed.
+  /// capability cannot be reclaimed afterward.
   ///
   /// # Safety
   ///
@@ -165,10 +164,17 @@ impl BootstrapPaging {
 impl KernelPaging {
   /// Executes `operation` with `frame` temporarily mapped read/write.
   ///
-  /// The alias maps exactly one 4 KiB frame, is non-executable and
-  /// supervisor-only, and is removed before returning. The closure must not
-  /// enable interrupts. Dereferencing the supplied address still requires the
-  /// caller to establish valid memory access and ownership for `frame`.
+  /// The alias maps exactly one 4 KiB frame and is non-executable and
+  /// supervisor-only. The supplied address is valid only during `operation`;
+  /// references created through it must not outlive the closure.
+  /// Dereferencing it requires the caller to establish valid memory access
+  /// and ownership for `frame`.
+  ///
+  /// Supervisor interrupts must already be disabled and remain disabled
+  /// throughout this call.
+  ///
+  /// The mapping is removed when the closure returns normally. Clean up does
+  /// not run during unwinding; current kernel panics halt without unwinding.
   ///
   /// # Errors
   ///
@@ -179,8 +185,7 @@ impl KernelPaging {
     frame: PhysFrame,
     operation: impl FnOnce(VirtAddr) -> R,
   ) -> Result<R, PagingError> {
-    let flags = PTE_VALID | PTE_READ | PTE_WRITE | PTE_ACCESSED | PTE_DIRTY;
-    let entry = page_table_entry(frame.start_address(), flags)?;
+    let entry = page_table_entry(frame.start_address(), FRAME_WINDOW_PTE_FLAGS)?;
 
     // SAFETY:
     // `KernelPaging` guarantees that the controlling L0 table is permanently

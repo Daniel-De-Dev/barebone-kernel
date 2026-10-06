@@ -153,6 +153,10 @@ impl<'fdt, 'dtb> BootFrameAllocator<'fdt, 'dtb> {
   ///
   /// # Safety
   ///
+  /// This capability must be used only on the claiming hart while its
+  /// bootstrap root remains active. Supervisor interrupts must remain
+  /// disabled during temporary frame access.
+  ///
   /// Every FDT-described memory range not excluded by `kernel`, `dtb`, or the
   /// FDT's reservation information must refer to physical RAM that the kernel
   /// may exclusively allocate.

@@ -127,8 +127,8 @@ extern "C" fn main(hart_id: usize, dtb: usize, kernel_phys_start: usize) -> ! {
   // The architecture bootstrap preserves the actual physical start of the live
   // kernel image, so `kernel_range` covers its complete linker-defined boot
   // footprint. `dtb_range` covers the same firmware-provided DTB backing `fdt`.
-  // The FDT is trusted to describe all other physical memory that is unavailable
-  // for allocation through its reservation information.
+  // The FDT is trusted to describe all other physical memory that is
+  // unavailable for allocation through its reservation information.
   let mut frames = match unsafe { BootFrameAllocator::claim(&fdt, kernel_range, dtb_range) } {
     Ok(frames) => frames,
     Err(error) => {

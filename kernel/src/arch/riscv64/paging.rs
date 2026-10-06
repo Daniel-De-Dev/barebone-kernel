@@ -114,8 +114,8 @@ const BOOT_FRAME_WINDOW_VPN2: usize = VPN_MASK;
 const BOOT_FRAME_WINDOW_BASE: usize =
   SV39_HIGH_HALF_BASE + ((BOOT_FRAME_WINDOW_VPN2 - SV39_HIGH_HALF_VPN2) * GIGAPAGE_SIZE);
 
-/// Flags used by the temporary physical-frame mapping.
-const BOOT_FRAME_PTE_FLAGS: usize = PTE_VALID | PTE_READ | PTE_WRITE | PTE_ACCESSED | PTE_DIRTY;
+/// Flags for read/write, non-executable supervisor frame-window leaves.
+const FRAME_WINDOW_PTE_FLAGS: usize = PTE_VALID | PTE_READ | PTE_WRITE | PTE_ACCESSED | PTE_DIRTY;
 
 /// Bit position of `satp.MODE` on RV64.
 const SATP_MODE_SHIFT: usize = 60;
@@ -330,7 +330,7 @@ impl BootstrapPaging {
 
     let physical_base = PhysAddr::new(frame_address.as_usize() & !GIGAPAGE_MASK);
 
-    let entry = page_table_entry(physical_base, BOOT_FRAME_PTE_FLAGS)?;
+    let entry = page_table_entry(physical_base, FRAME_WINDOW_PTE_FLAGS)?;
 
     // SAFETY:
     // `BootstrapPaging` guarantees that `root_virtual` maps the complete

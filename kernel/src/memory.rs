@@ -1,4 +1,4 @@
-//! Core physical memory abstractions.
+//! Core kernel memory abstractions.
 //!
 //! This module provides the common physical-memory vocabulary used by the
 //! kernel's memory-management code.
@@ -43,9 +43,9 @@ pub(crate) struct VirtRange {
 ///
 /// Each range includes its start and excludes its end. Section starts are
 /// page-aligned, but ends describe the actual section contents and may require
-/// rounding up when mapping complete pages. Empty sections have equal bounds.
+/// rounding up when mapping complete pages.
 ///
-/// None represents an empty section.
+/// Empty sections have equal linker bounds and are represented by `None`.
 #[derive(Debug)]
 pub(crate) struct KernelSections {
   /// Virtual origin corresponding to the physical kernel image start.
