@@ -1,7 +1,19 @@
 //! RISC-V Sv39 paging support.
 //!
-//! This module provides address-translation helpers and temporary mappings used
-//! while the kernel is running under its bootstrap Sv39 address space.
+//! This module provides bootstrap paging, construction of the kernel address
+//! space, and temporary access to physical frames after the root transition.
+// TODO: Support larger leaves for aligned, physically contiguous ranges
+//       with uniform permissions.
+// TODO: Protect the frame window against interrupt re-entry before handlers
+//       begin using paging.
+// TODO: Add synchronization and remote translation invalidation before
+//       multiple kernel harts share mutable mappings.
+// TODO: Add automatic temporary-mapping cleanup if recoverable unwinding
+//       or early returns are introduced after installing a mapping.
+
+mod kernel;
+
+pub(crate) use kernel::KernelPaging;
 
 use core::{
   arch::asm,
@@ -9,7 +21,9 @@ use core::{
   sync::atomic::{AtomicBool, Ordering},
 };
 
-use crate::memory::{AllocatedFrame, BootFrameAllocator, PhysAddr, PhysFrame, VirtAddr, VirtRange};
+use crate::memory::{
+  AllocatedFrame, BootFrameAllocator, PhysAddr, PhysFrame, PhysRange, VirtAddr, VirtRange,
+};
 
 /// Sign bit of an Sv39 virtual address.
 const SV39_SIGN_BIT: usize = 38;
@@ -662,6 +676,21 @@ pub(crate) enum PagingError {
     size: usize,
   },
 
+  /// A kernel section could not be translated into an aligned physical frame.
+  InvalidKernelSection {
+    /// Linker-defined virtual section range.
+    range: VirtRange,
+  },
+
+  /// The DTB alias had a different page offset or its page coverage overflowed.
+  InvalidDtbMapping {
+    /// Virtual address of the first byte of the DTB.
+    virtual_address: VirtAddr,
+
+    /// Physical range covering the DTB bytes.
+    physical_range: PhysRange,
+  },
+
   /// No physical frame remained for a required page table.
   OutOfPhysicalFrames,
 
@@ -806,6 +835,36 @@ fn flush_all() {
   // `sfence.vma` only affects address-translation state on the current hart.
   unsafe {
     asm!("sfence.vma zero, zero", options(nostack));
+  }
+}
+
+/// Installs a complete replacement root on the current hart.
+///
+/// # Safety
+///
+/// `root` must be representable in `satp` and identify a fully initialized Sv39
+/// hierarchy that preserves all live code, stack, trap, and borrowed-data
+/// mappings. Its table frames must remain allocated while the address space
+/// is active. The caller must consume the capability controlling the previous
+/// root and expose only the replacement capability after this operation
+/// completes.
+unsafe fn activate_root(root: PhysFrame) {
+  let satp = (SATP_MODE_SV39 << SATP_MODE_SHIFT) | (root.start_address().as_usize() >> PAGE_SHIFT);
+
+  // SAFETY:
+  // The caller establishes the replacement mapping and allocation invariants.
+  // The first fence orders completed table writes before the switch. The
+  // second invalidates old translations, including those using ASID zero.
+  // The assembly has a memory clobber. No fallible operation follows the satp
+  // write.
+  unsafe {
+    asm!(
+      "sfence.vma zero, zero",
+      "csrw satp, {satp}",
+      "sfence.vma zero, zero",
+      satp = in(reg) satp,
+      options(nostack),
+    );
   }
 }
 

@@ -18,6 +18,7 @@ use core::panic::PanicInfo;
 use fdt::Fdt;
 use memory::{BootFrameAllocator, PhysAddr, PhysRange, kernel_sections};
 
+// TODO: add debug/trace info for allocations
 /// Runs the kernel after architecture-specific initialization.
 ///
 /// `hart_id` identifies the RISC-V hart on which the kernel was entered.
@@ -75,9 +76,8 @@ extern "C" fn main(hart_id: usize, dtb: usize, kernel_phys_start: usize) -> ! {
 
   // SAFETY:
   // `BootstrapPaging::map_fdt` established a readable mapping containing the
-  // complete DTB. The bootstrap paging capability remains alive, so that
-  // mapping remains valid and unmodified while `fdt` and values borrowing from
-  // it are used.
+  // complete DTB. `into_kernel` transition preserves all pages backing this
+  // blob at the same virtual alias.
   let fdt = match unsafe { Fdt::from_ptr(dtb_ptr) } {
     Ok(fdt) => fdt,
     Err(error) => {
@@ -129,7 +129,7 @@ extern "C" fn main(hart_id: usize, dtb: usize, kernel_phys_start: usize) -> ! {
   // footprint. `dtb_range` covers the same firmware-provided DTB backing `fdt`.
   // The FDT is trusted to describe all other physical memory that is unavailable
   // for allocation through its reservation information.
-  let frames = match unsafe { BootFrameAllocator::claim(&fdt, kernel_range, dtb_range) } {
+  let mut frames = match unsafe { BootFrameAllocator::claim(&fdt, kernel_range, dtb_range) } {
     Ok(frames) => frames,
     Err(error) => {
       logging::error!(
@@ -141,7 +141,39 @@ extern "C" fn main(hart_id: usize, dtb: usize, kernel_phys_start: usize) -> ! {
     }
   };
 
-  logging::debug!("kernel halting");
+  // SAFETY:
+  // These sections come directly from the live kernel's linker symbols, and
+  // bootstrap supplied the actual physical load address. They cover the live
+  // code, trap vector, constants, data, and stack. `dtb_range` and `dtb_virtual`
+  // describe the complete blob backing `fdt` and the frame allocator. No other
+  // retained reference depends on a bootstrap-only mapping. Startup relies on
+  // the boot environment entering this hart with supervisor interrupts disabled
+  // and does not enable them before this transition. No other hart accesses
+  // these paging structures.
+  let kernel_paging = match unsafe {
+    bootstrap_paging.into_kernel(
+      kernel_phys_start,
+      &kernel_sections,
+      dtb_virtual,
+      dtb_range,
+      &mut frames,
+    )
+  } {
+    Ok(paging) => paging,
+    Err(error) => {
+      logging::error!(
+        "Failed to enter kernel paging ({error:?}); \
+        kernel startup is unrecoverable, halting"
+      );
+
+      arch::halt();
+    }
+  };
+
+  logging::info!("Kernel paging active");
+  logging::debug!("{:#?}", kernel_paging);
+
+  logging::info!("kernel halting");
   arch::halt()
 }
 

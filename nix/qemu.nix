@@ -106,8 +106,18 @@
               exit 1
             fi
 
-            if ! grep -Fq "kernel entered" "$log"; then
-              echo "kernel did not reach main" >&2
+            for expected in \
+              "kernel entered" \
+              "Kernel paging active"; do
+              if ! grep -Fq "$expected" "$log"; then
+                echo "kernel did not reach: $expected" >&2
+                cat "$log" >&2
+                exit 1
+              fi
+            done
+
+            if grep -Fq "Unhandled supervisor trap" "$log"; then
+              echo "kernel trapped during startup" >&2
               cat "$log" >&2
               exit 1
             fi
