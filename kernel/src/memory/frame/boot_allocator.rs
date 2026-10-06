@@ -20,9 +20,11 @@
 #[cfg(not(target_pointer_width = "64"))]
 compile_error!("the boot frame allocator currently requires a 64-bit target");
 
+use core::sync::atomic::{AtomicBool, Ordering};
+
 use fdt::{Fdt, MemoryRanges};
 
-use super::{PhysFrame, align_down, align_up};
+use super::{AllocatedFrame, PhysFrame, align_down, align_up};
 use crate::memory::{PhysAddr, PhysRange};
 
 /// Errors that can prevent construction of a boot frame allocator.
@@ -36,6 +38,9 @@ pub(crate) enum BootFrameAllocatorError {
     /// Second overlapping physical memory range.
     second: PhysRange,
   },
+
+  /// The boot physical-frame allocator has already been claimed.
+  AlreadyClaimed,
 }
 
 /// State for the physical memory range currently being scanned.
@@ -131,22 +136,55 @@ fn validate_memory_ranges(fdt: &Fdt<'_>) -> Result<(), BootFrameAllocatorError> 
   Ok(())
 }
 
+/// Tracks whether the boot physical-frame allocator has already been claimed.
+///
+/// Once set, this flag is never cleared, preventing multiple allocators from
+/// independently issuing ownership of the same physical frames.
+// TODO: If multiple physical-frame allocator implementations are introduced,
+// move this one-shot ownership guard above the individual implementations.
+static BOOT_FRAME_ALLOCATOR_CLAIMED: AtomicBool = AtomicBool::new(false);
+
 impl<'fdt, 'dtb> BootFrameAllocator<'fdt, 'dtb> {
-  /// Constructs a boot frame allocator.
+  /// Claims the boot-time physical frame allocator.
   ///
-  /// `kernel` and `dtb` describe physical ranges that must be excluded from
-  /// allocation.
+  /// This allocator can be claimed only once. A successful claim remains
+  /// permanent even if the returned [`BootFrameAllocator`] value is later
+  /// dropped.
+  ///
+  /// # Safety
+  ///
+  /// This capability must be used only on the claiming hart while its
+  /// bootstrap root remains active. Supervisor interrupts must remain
+  /// disabled during temporary frame access.
+  ///
+  /// Every FDT-described memory range not excluded by `kernel`, `dtb`, or the
+  /// FDT's reservation information must refer to physical RAM that the kernel
+  /// may exclusively allocate.
+  ///
+  /// `kernel` and `dtb` must completely cover the physical memory occupied by
+  /// the live kernel image and device-tree blob. All other physical memory that
+  /// must not be allocated must be described by the supplied FDT's reservation
+  /// information.
   ///
   /// # Errors
   ///
   /// Returns [`BootFrameAllocatorError::OverlappingMemoryRanges`] if two
-  /// FDT-described physical memory ranges overlap.
-  pub(crate) fn new(
+  /// FDT-described physical memory ranges overlap, or
+  /// [`BootFrameAllocatorError::AlreadyClaimed`] if the boot frame allocator has
+  /// already been claimed.
+  pub(crate) unsafe fn claim(
     fdt: &'fdt Fdt<'dtb>,
     kernel: PhysRange,
     dtb: PhysRange,
   ) -> Result<Self, BootFrameAllocatorError> {
     validate_memory_ranges(fdt)?;
+
+    if BOOT_FRAME_ALLOCATOR_CLAIMED
+      .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+      .is_err()
+    {
+      return Err(BootFrameAllocatorError::AlreadyClaimed);
+    }
 
     Ok(Self {
       fdt,
@@ -176,7 +214,7 @@ impl<'fdt, 'dtb> BootFrameAllocator<'fdt, 'dtb> {
     clippy::expect_used,
     reason = "CurrentMemoryRange guarantees that candidate cursors are frame-aligned and can contain a complete frame"
   )]
-  pub(crate) fn allocate(&mut self) -> Option<PhysFrame> {
+  pub(crate) fn allocate(&mut self) -> Option<AllocatedFrame> {
     loop {
       if self.current.is_none() && !self.advance_memory_range() {
         return None;
@@ -218,7 +256,7 @@ impl<'fdt, 'dtb> BootFrameAllocator<'fdt, 'dtb> {
         });
       }
 
-      return Some(frame);
+      return Some(AllocatedFrame::new(frame));
     }
   }
 

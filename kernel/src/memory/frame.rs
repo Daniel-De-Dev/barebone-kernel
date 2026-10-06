@@ -73,6 +73,49 @@ impl PhysFrame {
   }
 }
 
+/// A physical frame allocated exclusively for kernel use.
+///
+/// Unlike [`PhysFrame`], this type represents ownership rather than just
+/// describing a physical address range. Instances are created only by a frame
+/// allocator after the frame has been excluded from future allocation.
+#[derive(Debug)]
+#[must_use = "dropping an allocated frame permanently loses its ownership token"]
+// NOTE: The current allocator is monotonic, so dropping an `AllocatedFrame` does
+// not return the frame to the allocator.
+pub(crate) struct AllocatedFrame {
+  /// Physical frame owned by this allocation.
+  frame: PhysFrame,
+}
+
+impl AllocatedFrame {
+  /// Constructs ownership of `frame`.
+  ///
+  /// This is restricted to the memory-management implementation because
+  /// constructing an `AllocatedFrame` asserts that the frame has been
+  /// exclusively allocated and will not be returned again.
+  const fn new(frame: PhysFrame) -> Self {
+    Self { frame }
+  }
+
+  /// Returns the physical frame described by this allocation.
+  #[must_use]
+  pub(crate) const fn frame(&self) -> PhysFrame {
+    self.frame
+  }
+
+  /// Returns the physical start address of this allocation.
+  #[must_use]
+  pub(crate) const fn start_address(&self) -> PhysAddr {
+    self.frame.start_address()
+  }
+
+  /// Consumes this ownership token and returns its physical-frame descriptor.
+  #[must_use]
+  pub(crate) const fn into_frame(self) -> PhysFrame {
+    self.frame
+  }
+}
+
 /// Rounds a physical address up to the nearest frame boundary.
 ///
 /// If `address` is already frame-aligned, it is returned unchanged.

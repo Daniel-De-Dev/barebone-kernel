@@ -17,6 +17,9 @@
 //! `OpenSBI` supplies the hart ID in `a0` and the physical device-tree address
 //! in `a1`. The physical bootstrap places the kernel's physical start address
 //! in `a2`. All three values are preserved until `main` is entered.
+// TODO: Look into if kernel physical boot address needs to be passed in the
+// first place as an argument and inaccessible otherwise, else fix via linker
+// script.
 
 use core::arch::global_asm;
 

@@ -119,6 +119,10 @@ SECTIONS
     *(.srodata .srodata.*)
     *(.rodata .rodata.*)
 
+    . = ALIGN(8);
+    *(.eh_frame .eh_frame.*)
+    *(.eh_frame_hdr)
+
     _rodata_end = .;
   }
 
