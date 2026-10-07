@@ -18,6 +18,7 @@
   kernelOffset,
   regionSize,
   release ? true,
+  loggingFeatures ? [ ],
 }:
 let
   kernelCrate = "kernel";
@@ -47,6 +48,10 @@ naersk'.buildPackage {
     ++ [
       "--package"
       kernelCrate
+    ]
+    ++ lib.optionals (loggingFeatures != [ ]) [
+      "--features"
+      (lib.concatStringsSep "," loggingFeatures)
     ];
 
   CARGO_BUILD_TARGET = rustTarget;

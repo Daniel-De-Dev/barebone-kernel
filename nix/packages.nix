@@ -8,6 +8,8 @@
       ...
     }:
     let
+      variants = import ./logging.nix;
+
       rustToolchain = import ./toolchain.nix {
         fenixLib = inputs.fenix.packages.${system};
       };
@@ -22,6 +24,7 @@
           name,
           board,
           release,
+          loggingFeatures,
         }:
         import ./kernel.nix {
           inherit
@@ -30,6 +33,7 @@
             naersk'
             release
             name
+            loggingFeatures
             ;
 
           loadAddress = board.kernelAddress;
@@ -37,17 +41,14 @@
           regionSize = board.kernelRegionSize;
         };
 
-      mkKernelPackages = name: board: {
-        "kernel-${name}-debug" = mkKernel {
-          inherit name board;
-          release = false;
-        };
-
-        "kernel-${name}" = mkKernel {
-          inherit name board;
-          release = true;
-        };
-      };
+      mkKernelPackages =
+        name: board:
+        lib.concatMapAttrs (suffix: variant: {
+          "kernel-${name}${suffix}" = mkKernel {
+            inherit name board;
+            inherit (variant) release loggingFeatures;
+          };
+        }) variants;
     in
     {
       packages =

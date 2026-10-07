@@ -8,6 +8,7 @@
       ...
     }:
     let
+      variants = import ./logging.nix;
       riscvPkgs = pkgs.pkgsCross.riscv64;
       crossCompile = riscvPkgs.stdenv.cc.targetPrefix;
 
@@ -217,31 +218,23 @@
             ${builtins.readFile ./scripts/run-vf2.sh}
           '';
         };
-
-      runVisionFive2Debug = mkRunVisionFive2 {
-        programName = "run-vf2-debug";
-        fitImage = mkVisionFive2Fit {
-          name = "debug";
-          kernel = config.packages.kernel-vf2-debug;
-        };
-      };
-
-      runVisionFive2 = mkRunVisionFive2 {
-        programName = "run-vf2";
-        fitImage = mkVisionFive2Fit {
-          name = "release";
-          kernel = config.packages.kernel-vf2;
-        };
-      };
     in
     {
       # TODO: Implement a way between which boot option is intended
       # TODO: formatting an SD card
       # TODO: Maybe also flash the QSPI NOR Flash memory? (WARN: Will be overwriting factory firmware)
-      packages = {
-        vf2 = runVisionFive2;
-        vf2-debug = runVisionFive2Debug;
-        vf2-dtb = visionFive2Dtb;
-      };
+      packages =
+        lib.concatMapAttrs (suffix: _: {
+          "vf2${suffix}" = mkRunVisionFive2 {
+            programName = "run-vf2${suffix}";
+            fitImage = mkVisionFive2Fit {
+              name = if suffix == "" then "release" else lib.removePrefix "-" suffix;
+              kernel = config.packages."kernel-vf2${suffix}";
+            };
+          };
+        }) variants
+        // {
+          vf2-dtb = visionFive2Dtb;
+        };
     };
 }

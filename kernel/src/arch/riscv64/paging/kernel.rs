@@ -7,10 +7,16 @@ use super::{
   MEGAPAGE_SHIFT, PAGE_MASK, PAGE_SHIFT, PAGE_SIZE, PTE_EXECUTE, PTE_READ, PTE_WRITE, PagingError,
   Sv39PageTable, VPN_MASK, activate_root, flush_address, page_table_entry,
 };
-use crate::memory::{
-  AllocatedFrame, BootFrameAllocator, KernelSections, PhysAddr, PhysFrame, PhysRange, VirtAddr,
-  VirtRange,
+use crate::{
+  logging,
+  memory::{
+    AllocatedFrame, BootFrameAllocator, KernelSections, PhysAddr, PhysFrame, PhysRange, VirtAddr,
+    VirtRange,
+  },
 };
+
+#[cfg(all(feature = "log-debug", feature = "log-paging"))]
+use super::PtePermissions;
 
 /// Virtual page mapping the L0 table that controls the kernel frame window.
 ///
@@ -112,6 +118,17 @@ impl BootstrapPaging {
     frames: &mut BootFrameAllocator<'_, '_>,
   ) -> Result<KernelPaging, PagingError> {
     let (dtb_mapping, dtb_frame) = dtb_page_mapping(dtb_virtual, dtb_physical)?;
+
+    logging::debug!(
+      Paging,
+      "retaining DTB pa=[{:#x}, {:#x}) at alias_va={:#x}; page coverage va=[{:#x}, {:#x})",
+      dtb_physical.start(),
+      dtb_physical.end(),
+      dtb_virtual.as_usize(),
+      dtb_mapping.start().as_usize(),
+      dtb_mapping.end().as_usize(),
+    );
+
     let mut page_table = Sv39PageTable::new(&mut self, frames)?;
 
     for (section, permissions) in [
@@ -211,6 +228,14 @@ impl KernelPaging {
     // Make the newly installed mapping available.
     flush_address(address);
 
+    logging::trace!(
+      Paging,
+      "mapped kernel frame window va={FIXMAP_FRAME_BASE:#x} -> pa={:#x} \
+       size={PAGE_SIZE} perms={} pte={entry:#x}",
+      frame.start_address(),
+      PtePermissions(FRAME_WINDOW_PTE_FLAGS),
+    );
+
     let result = operation(address);
 
     // SAFETY:
@@ -221,6 +246,11 @@ impl KernelPaging {
     }
 
     flush_address(address);
+
+    logging::trace!(
+      Paging,
+      "unmapped kernel frame window va={FIXMAP_FRAME_BASE:#x}",
+    );
 
     Ok(result)
   }
@@ -286,6 +316,13 @@ impl Sv39PageTable {
       PTE_READ | PTE_WRITE,
       frames,
     )?;
+
+    logging::debug!(
+      Paging,
+      "prepared kernel frame window: table_pa={:#x} control_va={FIXMAP_TABLE_BASE:#x} \
+       frame_va={FIXMAP_FRAME_BASE:#x} (unmapped)",
+      level_0.start_address(),
+    );
 
     Ok(level_0)
   }

@@ -18,7 +18,6 @@ use core::panic::PanicInfo;
 use fdt::Fdt;
 use memory::{BootFrameAllocator, PhysAddr, PhysRange, kernel_sections};
 
-// TODO: add debug/trace info for allocations
 /// Runs the kernel after architecture-specific initialization.
 ///
 /// `hart_id` identifies the RISC-V hart on which the kernel was entered.
@@ -33,13 +32,11 @@ extern "C" fn main(hart_id: usize, dtb: usize, kernel_phys_start: usize) -> ! {
   let kernel_phys_start = PhysAddr::new(kernel_phys_start);
 
   logging::info!(
-    "kernel entered (hart={}, dtb={:#x}, kernel_start={:#x})",
-    hart_id,
-    dtb_phys,
-    kernel_phys_start
+    Boot,
+    "kernel entered (hart={hart_id}, dtb={dtb_phys:#x}, kernel_start={kernel_phys_start:#x})"
   );
 
-  logging::info!("initializing trap handling");
+  logging::info!(Boot, "initializing trap handling");
   arch::init_trap();
 
   // SAFETY:
@@ -50,6 +47,7 @@ extern "C" fn main(hart_id: usize, dtb: usize, kernel_phys_start: usize) -> ! {
     Ok(paging) => paging,
     Err(error) => {
       logging::error!(
+        Paging,
         "Failed to claim bootstrap paging state ({error:?}); \
         kernel startup is unrecoverable, halting"
       );
@@ -62,6 +60,7 @@ extern "C" fn main(hart_id: usize, dtb: usize, kernel_phys_start: usize) -> ! {
     Ok(address) => address,
     Err(error) => {
       logging::error!(
+        Paging,
         "Failed to establish higher-half DTB mapping ({error:?}); \
          kernel startup is unrecoverable, halting"
       );
@@ -69,8 +68,6 @@ extern "C" fn main(hart_id: usize, dtb: usize, kernel_phys_start: usize) -> ! {
       arch::halt();
     }
   };
-
-  logging::debug!("DTB higher-half alias: {:#x}", dtb_virtual.as_usize(),);
 
   let dtb_ptr = core::ptr::with_exposed_provenance::<u8>(dtb_virtual.as_usize());
 
@@ -81,47 +78,39 @@ extern "C" fn main(hart_id: usize, dtb: usize, kernel_phys_start: usize) -> ! {
   let fdt = match unsafe { Fdt::from_ptr(dtb_ptr) } {
     Ok(fdt) => fdt,
     Err(error) => {
-      logging::error!("Failed to parse FDT ({error:?}); kernel startup is unrecoverable, halting");
+      logging::error!(
+        Boot,
+        "Failed to parse FDT ({error:?}); kernel startup is unrecoverable, halting"
+      );
 
       arch::halt();
     }
   };
 
-  logging::debug!("FDT data structure:\n{:#?}", fdt);
-
-  for memory_range in fdt.memory_ranges() {
-    logging::debug!("{:?}", memory_range);
-  }
-
-  for memory_reservation in fdt.reserved_memory_ranges() {
-    logging::debug!("{:?}", memory_reservation);
-  }
-
-  for memory_reservation in fdt.memory_reservations() {
-    logging::debug!("{:?}", memory_reservation);
-  }
+  #[cfg(all(feature = "log-trace", feature = "log-boot"))]
+  log_fdt(&fdt);
 
   let Some(kernel_range) = memory::kernel_range(kernel_phys_start) else {
-    logging::error!("Invalid physical kernel range; kernel startup is unrecoverable, halting");
+    logging::error!(
+      Frames,
+      "Invalid physical kernel range; kernel startup is unrecoverable, halting"
+    );
 
     arch::halt();
   };
 
   let kernel_sections = kernel_sections();
 
-  logging::debug!("{:#?}", kernel_sections);
-
-  logging::debug!("Kernel Range: {:?}", kernel_range);
+  logging::trace!(Paging, "Kernel sections:\n{:#?}", kernel_sections);
 
   let Some(dtb_range) = PhysRange::from_start_size(dtb_phys, fdt.total_size()) else {
     logging::error!(
+      Frames,
       "Failed to establish DTB physical range; kernel startup is unrecoverable, halting"
     );
 
     arch::halt();
   };
-
-  logging::debug!("DTB Range: {:?}", dtb_range);
 
   // SAFETY:
   // The architecture bootstrap preserves the actual physical start of the live
@@ -133,6 +122,7 @@ extern "C" fn main(hart_id: usize, dtb: usize, kernel_phys_start: usize) -> ! {
     Ok(frames) => frames,
     Err(error) => {
       logging::error!(
+        Frames,
         "Failed to claim physical frame allocator ({error:?}); \
         kernel startup is unrecoverable, halting"
       );
@@ -162,6 +152,7 @@ extern "C" fn main(hart_id: usize, dtb: usize, kernel_phys_start: usize) -> ! {
     Ok(paging) => paging,
     Err(error) => {
       logging::error!(
+        Paging,
         "Failed to enter kernel paging ({error:?}); \
         kernel startup is unrecoverable, halting"
       );
@@ -170,11 +161,29 @@ extern "C" fn main(hart_id: usize, dtb: usize, kernel_phys_start: usize) -> ! {
     }
   };
 
-  logging::info!("Kernel paging active");
-  logging::debug!("{:#?}", kernel_paging);
+  logging::info!(Paging, "Kernel paging active");
+  logging::trace!(Paging, "Kernel paging state:\n{:#?}", kernel_paging);
 
-  logging::info!("kernel halting");
+  logging::info!(Boot, "kernel halting");
   arch::halt()
+}
+
+/// Reports the FDT and its memory ranges when verbose boot logging is enabled.
+#[cfg(all(feature = "log-trace", feature = "log-boot"))]
+fn log_fdt(fdt: &Fdt<'_>) {
+  logging::trace!(Boot, "FDT data structure:\n{:#?}", fdt);
+
+  for memory_range in fdt.memory_ranges() {
+    logging::trace!(Boot, "FDT RAM: {:?}", memory_range);
+  }
+
+  for memory_reservation in fdt.reserved_memory_ranges() {
+    logging::trace!(Boot, "FDT /reserved-memory: {:?}", memory_reservation);
+  }
+
+  for memory_reservation in fdt.memory_reservations() {
+    logging::trace!(Boot, "FDT reservation: {:?}", memory_reservation);
+  }
 }
 
 /// Handles unrecoverable Rust panics by halting the current hart.

@@ -70,6 +70,7 @@ pub(crate) fn init() {
 /// halts.
 extern "C" fn trap_handler(scause: usize, sepc: usize, stval: usize, sstatus: usize) -> ! {
   logging::error!(
+    Boot,
     "Unhandled supervisor trap occurred:\n\
       scause:  {:#018x}\n\
       sepc:    {:#018x}\n\

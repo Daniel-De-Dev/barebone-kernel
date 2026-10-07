@@ -49,6 +49,7 @@ return {
       settings['rust-analyzer'] = vim.tbl_deep_extend('force', current, {
         cargo = {
           target = 'riscv64gc-unknown-none-elf',
+          features = 'all',
         },
         check = {
           allTargets = false,

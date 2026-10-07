@@ -2,6 +2,11 @@
 //!
 //! This module provides bootstrap paging, construction of the kernel address
 //! space, and temporary access to physical frames after the root transition.
+//!
+//! With log-paging enabled, Debug summarizes mapping ranges and root changes;
+//! Trace records installed leaves, initialized tables, new table links, and
+//! kernel frame-window changes. PTE reads and bootstrap window accesses used
+//! for table traversal are not logged individually.
 // TODO: Support larger leaves for aligned, physically contiguous ranges
 //       with uniform permissions.
 // TODO: Protect the frame window against interrupt re-entry before handlers
@@ -21,9 +26,15 @@ use core::{
   sync::atomic::{AtomicBool, Ordering},
 };
 
-use crate::memory::{
-  AllocatedFrame, BootFrameAllocator, PhysAddr, PhysFrame, PhysRange, VirtAddr, VirtRange,
+use crate::{
+  logging,
+  memory::{
+    AllocatedFrame, BootFrameAllocator, PhysAddr, PhysFrame, PhysRange, VirtAddr, VirtRange,
+  },
 };
+
+#[cfg(all(feature = "log-debug", feature = "log-paging"))]
+use core::fmt;
 
 /// Sign bit of an Sv39 virtual address.
 const SV39_SIGN_BIT: usize = 38;
@@ -87,6 +98,23 @@ const PTE_DIRTY: usize = 1 << 7;
 
 /// Bits distinguishing an Sv39 leaf from a non-leaf entry.
 const PTE_LEAF_MASK: usize = PTE_READ | PTE_WRITE | PTE_EXECUTE;
+
+/// Formats PTE read/write/execute permissions for logging without allocation.
+#[cfg(all(feature = "log-debug", feature = "log-paging"))]
+struct PtePermissions(usize);
+
+#[cfg(all(feature = "log-debug", feature = "log-paging"))]
+impl fmt::Display for PtePermissions {
+  fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(
+      formatter,
+      "{}{}{}",
+      if self.0 & PTE_READ != 0 { 'r' } else { '-' },
+      if self.0 & PTE_WRITE != 0 { 'w' } else { '-' },
+      if self.0 & PTE_EXECUTE != 0 { 'x' } else { '-' },
+    )
+  }
+}
 
 /// Flags for a read-only boot-time FDT leaf mapping.
 const BOOT_FDT_PTE_FLAGS: usize = PTE_VALID | PTE_READ | PTE_ACCESSED;
@@ -193,6 +221,8 @@ impl BootstrapPaging {
       return Err(PagingError::BootstrapPagingAlreadyClaimed);
     }
 
+    logging::debug!(Paging, "claimed bootstrap Sv39 root pa={root:#x}");
+
     Ok(Self {
       root_virtual: VirtAddr::new(root.as_usize()),
     })
@@ -271,6 +301,14 @@ impl BootstrapPaging {
       unsafe {
         write_mapped_page_table_entry(self.root_virtual, root_index, entry)?;
       }
+
+      logging::trace!(
+        Paging,
+        "installed bootstrap DTB leaf va={:#x} -> pa={physical_address:#x} \
+         size={GIGAPAGE_SIZE} perms={} root_index={root_index} pte={entry:#x}",
+        BOOT_FDT_WINDOW_BASE + physical_offset,
+        PtePermissions(BOOT_FDT_PTE_FLAGS),
+      );
     }
 
     flush_all();
@@ -278,6 +316,13 @@ impl BootstrapPaging {
     let dtb_offset = dtb.as_usize() & GIGAPAGE_MASK;
 
     let virtual_address = BOOT_FDT_WINDOW_BASE + dtb_offset;
+
+    logging::debug!(
+      Paging,
+      "bootstrap DTB window ready: va_base={BOOT_FDT_WINDOW_BASE:#x} \
+       pa_base={physical_base:#x} leaves={BOOT_FDT_WINDOW_GIGAPAGES} \
+       leaf_size={GIGAPAGE_SIZE}; DTB pa={dtb:#x} alias_va={virtual_address:#x}",
+    );
 
     Ok(VirtAddr::new(virtual_address))
   }
@@ -444,6 +489,12 @@ impl BootstrapPaging {
 
     self.zero_page_table(&mut frame)?;
 
+    logging::trace!(
+      Paging,
+      "initialized empty page table pa={:#x} bytes={PAGE_SIZE}",
+      frame.start_address(),
+    );
+
     Ok(frame)
   }
 
@@ -472,6 +523,13 @@ impl BootstrapPaging {
 
     self.write_page_table_entry(parent, index, entry)?;
 
+    logging::trace!(
+      Paging,
+      "linked page table parent_pa={:#x} index={index} -> child_pa={:#x} pte={entry:#x}",
+      parent.start_address(),
+      child.start_address(),
+    );
+
     Ok(child.into_frame())
   }
 }
@@ -493,6 +551,12 @@ impl Sv39PageTable {
     frames: &mut BootFrameAllocator<'_, '_>,
   ) -> Result<Self, PagingError> {
     let root = bootstrap.allocate_page_table(frames)?;
+
+    logging::debug!(
+      Paging,
+      "created empty Sv39 root pa={:#x}",
+      root.start_address(),
+    );
 
     Ok(Self { root })
   }
@@ -554,6 +618,13 @@ impl Sv39PageTable {
         start: physical_base,
         size,
       })?;
+
+    logging::debug!(
+      Paging,
+      "mapping range va=[{start:#x}, {end:#x}) -> pa={physical_base:#x} \
+       pages={page_count} page_size={PAGE_SIZE} perms={} (supervisor)",
+      PtePermissions(permissions),
+    );
 
     for page_index in 0..page_count {
       let offset = page_index * PAGE_SIZE;
@@ -638,7 +709,26 @@ impl Sv39PageTable {
 
     let entry = page_table_entry(physical_frame.start_address(), flags)?;
 
-    bootstrap.write_page_table_entry(level_0, vpn0, entry)
+    #[cfg(all(feature = "log-trace", feature = "log-paging"))]
+    {
+      bootstrap.write_page_table_entry(level_0, vpn0, entry)?;
+
+      logging::trace!(
+        Paging,
+        "installed leaf va={address:#x} -> pa={:#x} size={PAGE_SIZE} perms={} \
+         table_pa={:#x} index={vpn0} pte={entry:#x}",
+        physical_frame.start_address(),
+        PtePermissions(flags),
+        level_0.start_address(),
+      );
+
+      Ok(())
+    }
+
+    #[cfg(not(all(feature = "log-trace", feature = "log-paging")))]
+    {
+      bootstrap.write_page_table_entry(level_0, vpn0, entry)
+    }
   }
 }
 
@@ -851,6 +941,12 @@ fn flush_all() {
 unsafe fn activate_root(root: PhysFrame) {
   let satp = (SATP_MODE_SV39 << SATP_MODE_SHIFT) | (root.start_address().as_usize() >> PAGE_SHIFT);
 
+  logging::debug!(
+    Paging,
+    "activating Sv39 root pa={:#x} satp={satp:#x} asid=0",
+    root.start_address(),
+  );
+
   // SAFETY:
   // The caller establishes the replacement mapping and allocation invariants.
   // The first fence orders completed table writes before the switch. The
@@ -866,6 +962,12 @@ unsafe fn activate_root(root: PhysFrame) {
       options(nostack),
     );
   }
+
+  logging::debug!(
+    Paging,
+    "Sv39 root active pa={:#x}; local translations flushed",
+    root.start_address(),
+  );
 }
 
 /// Reads one entry from a page table that is currently mapped at `address`.

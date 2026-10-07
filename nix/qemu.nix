@@ -8,6 +8,7 @@
       ...
     }:
     let
+      variants = import ./logging.nix;
       opensbiLib = import ./opensbi.nix { inherit inputs lib pkgs; };
 
       /*
@@ -69,19 +70,13 @@
         };
     in
     {
-      packages = {
-        qemu-debug = mkRunQemu {
-          programName = "run-qemu-debug";
-          kernel = config.packages.kernel-qemu-debug;
+      packages = lib.concatMapAttrs (suffix: _: {
+        "qemu${suffix}" = mkRunQemu {
+          programName = "run-qemu${suffix}";
+          kernel = config.packages."kernel-qemu${suffix}";
           opensbi = opensbiQemu;
         };
-
-        qemu = mkRunQemu {
-          programName = "run-qemu";
-          kernel = config.packages.kernel-qemu;
-          opensbi = opensbiQemu;
-        };
-      };
+      }) variants;
 
       checks.qemu-boot-smoke =
         pkgs.runCommand "qemu-boot-smoke"

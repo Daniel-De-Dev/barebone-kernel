@@ -24,8 +24,11 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use fdt::{Fdt, MemoryRanges};
 
-use super::{AllocatedFrame, PhysFrame, align_down, align_up};
-use crate::memory::{PhysAddr, PhysRange};
+use super::{AllocatedFrame, FRAME_SIZE, PhysFrame, align_down, align_up};
+use crate::{
+  logging,
+  memory::{PhysAddr, PhysRange},
+};
 
 /// Errors that can prevent construction of a boot frame allocator.
 #[derive(Debug)]
@@ -186,6 +189,20 @@ impl<'fdt, 'dtb> BootFrameAllocator<'fdt, 'dtb> {
       return Err(BootFrameAllocatorError::AlreadyClaimed);
     }
 
+    logging::info!(
+      Frames,
+      "boot frame allocator ready (frame_size={} bytes)",
+      FRAME_SIZE
+    );
+    logging::debug!(
+      Frames,
+      "reserved kernel pa=[{:#x}, {:#x}), DTB pa=[{:#x}, {:#x})",
+      kernel.start(),
+      kernel.end(),
+      dtb.start(),
+      dtb.end(),
+    );
+
     Ok(Self {
       fdt,
       memory_ranges: fdt.memory_ranges(),
@@ -217,6 +234,10 @@ impl<'fdt, 'dtb> BootFrameAllocator<'fdt, 'dtb> {
   pub(crate) fn allocate(&mut self) -> Option<AllocatedFrame> {
     loop {
       if self.current.is_none() && !self.advance_memory_range() {
+        logging::debug!(
+          Frames,
+          "allocation failed: no allocatable physical frames remain"
+        );
         return None;
       }
 
@@ -229,9 +250,27 @@ impl<'fdt, 'dtb> BootFrameAllocator<'fdt, 'dtb> {
 
       if let Some(reserved) = self.overlapping_reservation(frame_range) {
         let Some(next) = align_up(reserved.end()) else {
+          logging::debug!(
+            Frames,
+            "discarding remaining RAM pa=[{:#x}, {:#x}): \
+             reservation pa=[{:#x}, {:#x}) has an unalignable end",
+            current.cursor,
+            current.end,
+            reserved.start(),
+            reserved.end(),
+          );
           self.current = None;
           continue;
         };
+
+        logging::debug!(
+          Frames,
+          "skipping reservation pa=[{:#x}, {:#x}) at candidate={:#x}; aligned_end={:#x}",
+          reserved.start(),
+          reserved.end(),
+          current.cursor,
+          next,
+        );
 
         if next.as_usize() >= current.end.as_usize() {
           self.current = None;
@@ -256,6 +295,13 @@ impl<'fdt, 'dtb> BootFrameAllocator<'fdt, 'dtb> {
         });
       }
 
+      logging::trace!(
+        Frames,
+        "allocated frame pa=[{:#x}, {:#x})",
+        frame_range.start(),
+        frame_range.end(),
+      );
+
       return Some(AllocatedFrame::new(frame));
     }
   }
@@ -273,16 +319,37 @@ impl<'fdt, 'dtb> BootFrameAllocator<'fdt, 'dtb> {
       let range = fdt_range(range.address(), range.size());
 
       let Some(start) = align_up(range.start()) else {
+        logging::debug!(
+          Frames,
+          "ignoring RAM pa=[{:#x}, {:#x}): start alignment overflows",
+          range.start(),
+          range.end(),
+        );
         continue;
       };
 
       let end = align_down(range.end());
 
       if start.as_usize() >= end.as_usize() {
+        logging::debug!(
+          Frames,
+          "ignoring RAM pa=[{:#x}, {:#x}): no complete physical frame",
+          range.start(),
+          range.end(),
+        );
         continue;
       }
 
       self.current = Some(CurrentMemoryRange { cursor: start, end });
+
+      logging::debug!(
+        Frames,
+        "scanning aligned RAM pa=[{:#x}, {:#x}) from FDT pa=[{:#x}, {:#x})",
+        start,
+        end,
+        range.start(),
+        range.end(),
+      );
 
       return true;
     }

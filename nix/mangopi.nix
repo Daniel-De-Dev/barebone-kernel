@@ -8,6 +8,7 @@
       ...
     }:
     let
+      variants = import ./logging.nix;
       board = boards.mangopi;
 
       opensbiLib = import ./opensbi.nix { inherit inputs lib pkgs; };
@@ -141,19 +142,16 @@
         };
     in
     {
-      packages = {
-        # TODO: Define SD flashing
-        mangopi-debug = mkRunMangoPi {
-          programName = "run-mangopi-debug";
-          kernel = config.packages.kernel-mangopi-debug;
+      # TODO: Define SD flashing
+      packages =
+        lib.concatMapAttrs (suffix: _: {
+          "mangopi${suffix}" = mkRunMangoPi {
+            programName = "run-mangopi${suffix}";
+            kernel = config.packages."kernel-mangopi${suffix}";
+          };
+        }) variants
+        // {
+          mangopi-dtb = mangoPiDtb;
         };
-
-        mangopi = mkRunMangoPi {
-          programName = "run-mangopi";
-          kernel = config.packages.kernel-mangopi;
-        };
-
-        mangopi-dtb = mangoPiDtb;
-      };
     };
 }

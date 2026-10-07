@@ -13,3 +13,11 @@ bench = false
 
 [lints]
 workspace = true
+
+[features]
+log-debug = []
+log-trace = ["log-debug"]
+
+log-boot = []
+log-frames = []
+log-paging = []
