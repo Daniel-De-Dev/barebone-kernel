@@ -11,8 +11,11 @@
 //! Disabled macro calls are removed with cfg attributes, including their
 //! argument expressions. Keep kernel operations outside logging arguments.
 //! Diagnostic work performed before a call needs its own matching cfg guard.
+//!
+//! After the one-time architecture probe, records include a `time` field only
+//! if the current hart can read the time CSR.
 
-use crate::console::Console;
+use crate::{arch, console::Console};
 use core::fmt::{self, Write};
 
 /// Severity level of a log record.
@@ -77,6 +80,17 @@ impl fmt::Display for Target {
   }
 }
 
+/// Raw timebase ticks, formatted without allocation.
+struct Timestamp(Option<u64>);
+
+impl fmt::Display for Timestamp {
+  fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    self
+      .0
+      .map_or(Ok(()), |ticks| write!(formatter, "[{ticks:>12}]"))
+  }
+}
+
 /// Formats and writes one record directly to the kernel console.
 ///
 /// Console output is best-effort. Write failures are ignored because there is
@@ -85,13 +99,14 @@ impl fmt::Display for Target {
 ///
 /// Output currently relies on the kernel's single-hart execution.
 pub(super) fn write(level: Level, target: Target, file: &str, line: u32, args: fmt::Arguments<'_>) {
+  let time = Timestamp(arch::time_ticks());
   let mut console = Console;
 
   let file = file.strip_prefix("kernel/src/").unwrap_or(file);
 
   let _write_result = writeln!(
     console,
-    "[{level:<5}][{target:<6}] {file:>32}:{line:<4} | {args}"
+    "[{level:<5}][{target:<6}]{time} {file:>32}:{line:<4} | {args}"
   );
 }
 

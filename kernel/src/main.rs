@@ -31,13 +31,19 @@ extern "C" fn main(hart_id: usize, dtb: usize, kernel_phys_start: usize) -> ! {
   let dtb_phys = PhysAddr::new(dtb);
   let kernel_phys_start = PhysAddr::new(kernel_phys_start);
 
+  arch::init_trap();
+
+  // SAFETY:
+  // The probe's recovery trap entry is installed on this sole running hart.
+  // Firmware must preserve any counter access it grants for subsequent logs.
+  unsafe { arch::init_time() };
+
   logging::info!(
     Boot,
     "kernel entered (hart={hart_id}, dtb={dtb_phys:#x}, kernel_start={kernel_phys_start:#x})"
   );
 
-  logging::info!(Boot, "initializing trap handling");
-  arch::init_trap();
+  logging::info!(Boot, "trap handling ready");
 
   // SAFETY:
   // Architecture bootstrap enters `main` with the complete active Sv39 root

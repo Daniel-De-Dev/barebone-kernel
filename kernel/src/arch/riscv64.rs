@@ -5,9 +5,11 @@
 
 mod boot;
 mod paging;
+mod time;
 mod trap;
 
 pub(crate) use paging::{BootstrapPaging, KernelPaging};
+pub(crate) use time::{init as init_time, ticks as time_ticks};
 pub(crate) use trap::init as init_trap;
 
 use core::arch::asm;

@@ -7,4 +7,4 @@
 mod riscv64;
 
 #[cfg(target_arch = "riscv64")]
-pub(super) use riscv64::{BootstrapPaging, KernelPaging, halt, init_trap};
+pub(super) use riscv64::{BootstrapPaging, KernelPaging, halt, init_time, init_trap, time_ticks};
