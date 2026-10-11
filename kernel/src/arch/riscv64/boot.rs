@@ -15,11 +15,7 @@
 //! virtual region.
 //!
 //! `OpenSBI` supplies the hart ID in `a0` and the physical device-tree address
-//! in `a1`. The physical bootstrap places the kernel's physical start address
-//! in `a2`. All three values are preserved until `main` is entered.
-// TODO: Look into if kernel physical boot address needs to be passed in the
-// first place as an argument and inaccessible otherwise, else fix via linker
-// script.
+//! in `a1`. Both values are preserved until `main` is entered.
 
 use core::arch::global_asm;
 
@@ -57,9 +53,6 @@ global_asm!(
   .global _start
 
 _start:
-  /* Carry the physical kernel base into higher-half Rust through a2. */
-  lla a2, _kernel_physical_start
-
   lla t0, __boot_page_table
   mv t1, t0
 
@@ -181,7 +174,7 @@ __high_half_start:
   j .Lbss_loop
 
 .Lbss_done:
-  /* a0-a2 carry the hart ID, physical DTB address, and physical kernel base. */
+  /* a0-a1 carry the hart ID and physical DTB address. */
   tail main
   "#
 );

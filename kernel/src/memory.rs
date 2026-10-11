@@ -68,6 +68,9 @@ pub(crate) struct KernelSections {
 }
 
 unsafe extern "C" {
+  /// Physical image start stored by the linker in higher-half `.rodata`.
+  static _kernel_physical_start_value: usize;
+
   /// Linker-defined symbol marking the start of the kernel's complete virtual
   /// boot-time footprint.
   static _kernel_virtual_start: u8;
@@ -164,11 +167,23 @@ fn kernel_size() -> usize {
     .expect("linker must produce a non-empty kernel virtual range")
 }
 
+/// Returns the physical load address stored in the live kernel image.
+///
+/// The boot environment must load the image at its linker-defined physical
+/// address. The value is stored in higher-half `.rodata`, which remains
+/// readable after switching from bootstrap to kernel paging.
+#[must_use]
+pub(crate) fn kernel_physical_start() -> PhysAddr {
+  // SAFETY:
+  // The linker emits an aligned 64-bit value in mapped, immutable `.rodata`.
+  // The kernel runs on a 64-bit target, so the value has the layout of `usize`.
+  PhysAddr::new(unsafe { _kernel_physical_start_value })
+}
+
 /// Returns the physical memory range reserved for the kernel at boot.
 ///
-/// `physical_start` is supplied by the architecture bootstrap because the
-/// higher-half kernel cannot infer its board-specific physical load address
-/// from its virtual location alone.
+/// `physical_start` must be the linker-defined physical load address returned
+/// by [`kernel_physical_start`].
 #[must_use]
 pub(crate) fn kernel_range(physical_start: PhysAddr) -> Option<PhysRange> {
   PhysRange::from_start_size(physical_start, kernel_size())

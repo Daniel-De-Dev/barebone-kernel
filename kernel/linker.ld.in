@@ -116,6 +116,10 @@ SECTIONS
   ) {
     _rodata_start = .;
 
+    . = ALIGN(8);
+    _kernel_physical_start_value = .;
+    QUAD(_kernel_physical_start);
+
     *(.srodata .srodata.*)
     *(.rodata .rodata.*)
 

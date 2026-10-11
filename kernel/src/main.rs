@@ -22,14 +22,13 @@ use memory::{BootFrameAllocator, PhysAddr, PhysRange, kernel_sections};
 ///
 /// `hart_id` identifies the RISC-V hart on which the kernel was entered.
 /// `dtb` is the physical address of the device tree supplied by the previous
-/// firmware stage. `kernel_phys_start` is the physical start of the kernel
-/// image preserved by the bootstrap before entering the higher half.
+/// firmware stage.
 ///
 /// This function does not return.
 #[unsafe(no_mangle)]
-extern "C" fn main(hart_id: usize, dtb: usize, kernel_phys_start: usize) -> ! {
+extern "C" fn main(hart_id: usize, dtb: usize) -> ! {
   let dtb_phys = PhysAddr::new(dtb);
-  let kernel_phys_start = PhysAddr::new(kernel_phys_start);
+  let kernel_phys_start = memory::kernel_physical_start();
 
   arch::init_trap();
 
@@ -119,8 +118,8 @@ extern "C" fn main(hart_id: usize, dtb: usize, kernel_phys_start: usize) -> ! {
   };
 
   // SAFETY:
-  // The architecture bootstrap preserves the actual physical start of the live
-  // kernel image, so `kernel_range` covers its complete linker-defined boot
+  // The boot environment loads the kernel at its linker-defined physical
+  // address, so `kernel_range` covers its complete linker-defined boot
   // footprint. `dtb_range` covers the same firmware-provided DTB backing `fdt`.
   // The FDT is trusted to describe all other physical memory that is
   // unavailable for allocation through its reservation information.
@@ -139,7 +138,7 @@ extern "C" fn main(hart_id: usize, dtb: usize, kernel_phys_start: usize) -> ! {
 
   // SAFETY:
   // These sections come directly from the live kernel's linker symbols, and
-  // bootstrap supplied the actual physical load address. They cover the live
+  // the linker provides the physical load address. They cover the live
   // code, trap vector, constants, data, and stack. `dtb_range` and `dtb_virtual`
   // describe the complete blob backing `fdt` and the frame allocator. No other
   // retained reference depends on a bootstrap-only mapping. Startup relies on
