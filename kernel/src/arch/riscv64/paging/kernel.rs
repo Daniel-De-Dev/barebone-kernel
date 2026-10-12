@@ -1,17 +1,19 @@
-//! The active kernel Sv39 address space and temporary physical-frame access.
+//! The active kernel Sv39 address space and persistent/temporary frame
+//! mappings.
 
 use core::{fmt, ptr};
 
 use super::{
-  BOOT_FRAME_WINDOW_BASE, BootstrapPaging, FRAME_WINDOW_PTE_FLAGS, GIGAPAGE_SHIFT, GIGAPAGE_SIZE,
-  MEGAPAGE_SHIFT, PAGE_MASK, PAGE_SHIFT, PAGE_SIZE, PTE_EXECUTE, PTE_READ, PTE_WRITE, PagingError,
-  Sv39PageTable, VPN_MASK, activate_root, flush_address, page_table_entry,
+  BOOT_FRAME_WINDOW_BASE, BootstrapPaging, FRAME_WINDOW_PTE_FLAGS, FrameAccess, GIGAPAGE_SHIFT,
+  GIGAPAGE_SIZE, MEGAPAGE_SHIFT, PAGE_MASK, PAGE_SHIFT, PAGE_SIZE, PagingError,
+  SV39_HIGH_HALF_BASE, Sv39PageTable, VPN_MASK, activate_root, flush_address, flush_all, map_page,
+  page_table_entry,
 };
 use crate::{
   logging,
   memory::{
-    AllocatedFrame, BootFrameAllocator, KernelSections, PhysAddr, PhysFrame, PhysRange, VirtAddr,
-    VirtRange,
+    AllocatedFrame, FrameAllocator, KernelSections, PagePermissions, PhysAddr, PhysFrame,
+    PhysRange, VirtAddr, VirtRange,
   },
 };
 
@@ -115,7 +117,7 @@ impl BootstrapPaging {
     sections: &KernelSections,
     dtb_virtual: VirtAddr,
     dtb_physical: PhysRange,
-    frames: &mut BootFrameAllocator<'_, '_>,
+    frames: &mut impl FrameAllocator,
   ) -> Result<KernelPaging, PagingError> {
     let (dtb_mapping, dtb_frame) = dtb_page_mapping(dtb_virtual, dtb_physical)?;
 
@@ -132,11 +134,11 @@ impl BootstrapPaging {
     let mut page_table = Sv39PageTable::new(&mut self, frames)?;
 
     for (section, permissions) in [
-      (sections.text, PTE_READ | PTE_EXECUTE),
-      (sections.rodata, PTE_READ),
-      (sections.data, PTE_READ | PTE_WRITE),
-      (sections.bss, PTE_READ | PTE_WRITE),
-      (sections.stack, PTE_READ | PTE_WRITE),
+      (sections.text, PagePermissions::ReadExecute),
+      (sections.rodata, PagePermissions::ReadOnly),
+      (sections.data, PagePermissions::ReadWrite),
+      (sections.bss, PagePermissions::ReadWrite),
+      (sections.stack, PagePermissions::ReadWrite),
     ] {
       let Some(range) = section else {
         continue;
@@ -153,7 +155,13 @@ impl BootstrapPaging {
       page_table.map_range(&mut self, range, physical_start, permissions, frames)?;
     }
 
-    page_table.map_range(&mut self, dtb_mapping, dtb_frame, PTE_READ, frames)?;
+    page_table.map_range(
+      &mut self,
+      dtb_mapping,
+      dtb_frame,
+      PagePermissions::ReadOnly,
+      frames,
+    )?;
 
     let fixmap_table = page_table.prepare_fixmap(&mut self, frames)?;
 
@@ -179,6 +187,54 @@ impl BootstrapPaging {
 }
 
 impl KernelPaging {
+  /// Maps one previously unmapped upper-half virtual page to an owned frame.
+  ///
+  /// The 4 KiB mapping is supervisor-only and remains installed after this
+  /// call. Missing intermediate tables are allocated and zeroed through the
+  /// normal kernel frame window. The frame-window page itself is reserved.
+  ///
+  /// Use only on the owning hart with this root active and supervisor
+  /// interrupts disabled. No other hart or trap handler may access these
+  /// tables or the temporary window concurrently.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error for an invalid, unaligned, reserved, or already mapped
+  /// virtual page, an unrepresentable physical frame, frame exhaustion, or
+  /// malformed intermediate entries. Local translations are synchronized
+  /// even after partial failure. Remote invalidation is not supported.
+  pub(crate) fn map_page(
+    &mut self,
+    virtual_address: VirtAddr,
+    frame: AllocatedFrame,
+    permissions: PagePermissions,
+    frames: &mut impl FrameAllocator,
+  ) -> Result<(), PagingError> {
+    let address = virtual_address.as_usize();
+
+    if address < SV39_HIGH_HALF_BASE {
+      return Err(PagingError::VirtualAddressNotKernel { address });
+    }
+
+    if address == FIXMAP_FRAME_BASE {
+      return Err(PagingError::ReservedVirtualPage { address });
+    }
+
+    let root = self.root.frame();
+    let result = map_page(
+      root,
+      self,
+      virtual_address,
+      frame.into_frame(),
+      permissions,
+      frames,
+    );
+
+    flush_all();
+
+    result
+  }
+
   /// Executes `operation` with `frame` temporarily mapped read/write.
   ///
   /// The alias maps exactly one 4 KiB frame and is non-executable and
@@ -262,23 +318,22 @@ impl KernelPaging {
   ///
   /// Returns an error if the physical address cannot be represented by Sv39
   /// or the temporary frame slot is already occupied.
-  #[expect(
-    clippy::needless_pass_by_ref_mut,
-    reason = "the mutable borrow intentionally provides exclusive access to \
-              the allocated frame while its memory is initialized"
-  )]
   pub(crate) fn zero_frame(&mut self, frame: &mut AllocatedFrame) -> Result<(), PagingError> {
-    self.with_frame(frame.frame(), |address| {
-      let pointer = ptr::with_exposed_provenance_mut::<u8>(address.as_usize());
+    FrameAccess::zero_frame(self, frame)
+  }
+}
 
-      // SAFETY:
-      // The window maps the complete 4 KiB frame for this closure. The mutable
-      // `AllocatedFrame` borrow provides exclusive ownership of the RAM being
-      // initialized, and this operation creates no persistent references.
-      unsafe {
-        ptr::write_bytes(pointer, 0, PAGE_SIZE);
-      }
-    })
+// SAFETY:
+// The kernel capability exclusively controls its one-page frame window. Its
+// inherent with_frame maps the supplied frame read/write and removes the alias
+// before returning normally, subject to the capability's single-hart contract.
+unsafe impl FrameAccess for KernelPaging {
+  fn with_frame<R>(
+    &mut self,
+    frame: PhysFrame,
+    operation: impl FnOnce(VirtAddr) -> R,
+  ) -> Result<R, PagingError> {
+    Self::with_frame(self, frame, operation)
   }
 }
 
@@ -290,10 +345,14 @@ impl Sv39PageTable {
   ///
   /// Returns an error if the tables cannot be allocated or accessed, or either
   /// fixmap page is already occupied.
+  #[expect(
+    clippy::needless_pass_by_ref_mut,
+    reason = "the mutable borrow keeps the root exclusively controlled while its tables change"
+  )]
   fn prepare_fixmap(
     &mut self,
     bootstrap: &mut BootstrapPaging,
-    frames: &mut BootFrameAllocator<'_, '_>,
+    frames: &mut impl FrameAllocator,
   ) -> Result<PhysFrame, PagingError> {
     let vpn2 = (FIXMAP_TABLE_BASE >> GIGAPAGE_SHIFT) & VPN_MASK;
     let vpn1 = (FIXMAP_TABLE_BASE >> MEGAPAGE_SHIFT) & VPN_MASK;
@@ -309,11 +368,12 @@ impl Sv39PageTable {
       });
     }
 
-    self.map_page(
+    map_page(
+      self.root.frame(),
       bootstrap,
       VirtAddr::new(FIXMAP_TABLE_BASE),
       level_0,
-      PTE_READ | PTE_WRITE,
+      PagePermissions::ReadWrite,
       frames,
     )?;
 

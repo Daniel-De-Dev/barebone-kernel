@@ -11,7 +11,24 @@ mod address;
 mod frame;
 
 pub(crate) use address::{PhysAddr, VirtAddr};
-pub(crate) use frame::{AllocatedFrame, BootFrameAllocator, PhysFrame};
+pub(crate) use frame::{AllocatedFrame, BootFrameAllocator, FrameAllocator, PhysFrame};
+
+/// Access permitted through a supervisor-only virtual page mapping.
+#[derive(Clone, Copy, Debug)]
+#[expect(
+  clippy::enum_variant_names,
+  reason = "all supported leaves are readable; each name states the complete permission combination"
+)]
+pub(crate) enum PagePermissions {
+  /// Readable, non-writable, and non-executable.
+  ReadOnly,
+
+  /// Readable and writable, but non-executable.
+  ReadWrite,
+
+  /// Readable and executable, but non-writable.
+  ReadExecute,
+}
 
 /// A non-empty half-open physical address range `[start, end)`.
 ///

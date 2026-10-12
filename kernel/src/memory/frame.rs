@@ -16,12 +16,27 @@
 
 mod boot_allocator;
 
-pub(crate) use boot_allocator::{BootFrameAllocator, BootFrameAllocatorError};
+pub(crate) use boot_allocator::BootFrameAllocator;
 
 use super::{PhysAddr, PhysRange};
 
 /// Size of one physical memory frame in bytes.
 pub(crate) const FRAME_SIZE: usize = 4096;
+
+/// Supplies exclusively owned physical frames to memory-management code.
+///
+/// Returned frames must remain reserved until their ownership is explicitly
+/// returned to an allocator. The current boot allocator never reclaims them.
+pub(crate) trait FrameAllocator {
+  /// Allocates one frame, or returns `None` when no frame remains.
+  fn allocate(&mut self) -> Option<AllocatedFrame>;
+}
+
+impl FrameAllocator for BootFrameAllocator<'_, '_> {
+  fn allocate(&mut self) -> Option<AllocatedFrame> {
+    Self::allocate(self)
+  }
+}
 
 /// One fixed-size physical memory frame.
 ///

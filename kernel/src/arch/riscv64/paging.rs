@@ -1,7 +1,7 @@
 //! RISC-V Sv39 paging support.
 //!
 //! This module provides bootstrap paging, construction of the kernel address
-//! space, and temporary access to physical frames after the root transition.
+//! space, persistent runtime mappings, and temporary access to physical frames.
 //!
 //! With log-paging enabled, Debug summarizes mapping ranges and root changes;
 //! Trace records installed leaves, initialized tables, new table links, and
@@ -16,7 +16,10 @@
 // TODO: Add automatic temporary-mapping cleanup if recoverable unwinding
 //       or early returns are introduced after installing a mapping.
 
+mod access;
 mod kernel;
+
+use access::FrameAccess;
 
 pub(crate) use kernel::KernelPaging;
 
@@ -29,7 +32,8 @@ use core::{
 use crate::{
   logging,
   memory::{
-    AllocatedFrame, BootFrameAllocator, PhysAddr, PhysFrame, PhysRange, VirtAddr, VirtRange,
+    AllocatedFrame, FrameAllocator, PagePermissions, PhysAddr, PhysFrame, PhysRange, VirtAddr,
+    VirtRange,
   },
 };
 
@@ -403,134 +407,19 @@ impl BootstrapPaging {
 
     Ok(result)
   }
+}
 
-  /// Clears every entry in a physical page-table frame.
-  ///
-  /// # Errors
-  ///
-  /// Returns an error if `frame` cannot be accessed through the bootstrap
-  /// physical-frame window.
-  #[expect(
-    clippy::needless_pass_by_ref_mut,
-    reason = "the mutable borrow intentionally provides exclusive access to \
-              the allocated frame while its memory is initialized"
-  )]
-  fn zero_page_table(&mut self, frame: &mut AllocatedFrame) -> Result<(), PagingError> {
-    let physical_frame = frame.frame();
-
-    self.with_frame(physical_frame, |address| {
-      let table_pointer = ptr::with_exposed_provenance_mut::<PageTable>(address.as_usize());
-
-      // SAFETY:
-      // `with_frame` maps the complete allocated frame at `address` for this
-      // operation, and `AllocatedFrame` provides exclusive ownership of the
-      // physical frame being initialized.
-      unsafe {
-        ptr::write_bytes(table_pointer, 0, 1);
-      }
-    })
-  }
-
-  /// Reads one entry from a physical page-table frame.
-  ///
-  /// # Errors
-  ///
-  /// Returns an error if the frame cannot be temporarily mapped or `index` is
-  /// outside the page table.
-  fn read_page_table_entry(
+// SAFETY:
+// The bootstrap capability exclusively controls its temporary window. Its
+// inherent with_frame maps the complete supplied frame read/write and removes
+// the alias before returning normally.
+unsafe impl FrameAccess for BootstrapPaging {
+  fn with_frame<R>(
     &mut self,
     frame: PhysFrame,
-    index: usize,
-  ) -> Result<usize, PagingError> {
-    self.with_frame(frame, |address| {
-      // SAFETY:
-      // `with_frame` maps the complete physical frame at `address` for the
-      // duration of this operation.
-      unsafe { read_mapped_page_table_entry(address, index) }
-    })?
-  }
-
-  /// Writes one entry in a physical page-table frame.
-  ///
-  /// # Errors
-  ///
-  /// Returns an error if the frame cannot be temporarily mapped or `index` is
-  /// outside the page table.
-  fn write_page_table_entry(
-    &mut self,
-    frame: PhysFrame,
-    index: usize,
-    entry: usize,
-  ) -> Result<(), PagingError> {
-    self.with_frame(frame, |address| {
-      // SAFETY:
-      // `with_frame` maps the complete writable physical frame at `address` for
-      // the duration of this operation.
-      unsafe { write_mapped_page_table_entry(address, index, entry) }
-    })?
-  }
-
-  /// Allocates and initializes one empty physical page-table frame.
-  ///
-  /// # Errors
-  ///
-  /// Returns [`PagingError::OutOfPhysicalFrames`] if no frame remains, or an
-  /// error if the allocated frame cannot be initialized through the temporary
-  /// mapping window.
-  // TODO: Deal with ownership one day in the future for who is responsible for
-  // freeing. Works now since allocator never frees
-  fn allocate_page_table(
-    &mut self,
-    frames: &mut BootFrameAllocator<'_, '_>,
-  ) -> Result<AllocatedFrame, PagingError> {
-    let Some(mut frame) = frames.allocate() else {
-      return Err(PagingError::OutOfPhysicalFrames);
-    };
-
-    self.zero_page_table(&mut frame)?;
-
-    logging::trace!(
-      Paging,
-      "initialized empty page table pa={:#x} bytes={PAGE_SIZE}",
-      frame.start_address(),
-    );
-
-    Ok(frame)
-  }
-
-  /// Returns the child table referenced by `parent[index]`, allocating it when
-  /// the entry is currently empty.
-  ///
-  /// # Errors
-  ///
-  /// Returns an error if the parent cannot be accessed, no physical frame remains,
-  /// or an existing entry is not a valid non-leaf page-table pointer.
-  fn next_table(
-    &mut self,
-    parent: PhysFrame,
-    index: usize,
-    frames: &mut BootFrameAllocator<'_, '_>,
-  ) -> Result<PhysFrame, PagingError> {
-    let entry = self.read_page_table_entry(parent, index)?;
-
-    if entry != 0 {
-      return intermediate_frame(index, entry);
-    }
-
-    let child = self.allocate_page_table(frames)?;
-
-    let entry = page_table_entry(child.start_address(), PTE_VALID)?;
-
-    self.write_page_table_entry(parent, index, entry)?;
-
-    logging::trace!(
-      Paging,
-      "linked page table parent_pa={:#x} index={index} -> child_pa={:#x} pte={entry:#x}",
-      parent.start_address(),
-      child.start_address(),
-    );
-
-    Ok(child.into_frame())
+    operation: impl FnOnce(VirtAddr) -> R,
+  ) -> Result<R, PagingError> {
+    Self::with_frame(self, frame, operation)
   }
 }
 
@@ -547,10 +436,10 @@ impl Sv39PageTable {
   ///
   /// Returns an error if no root frame can be allocated or initialized.
   fn new(
-    bootstrap: &mut BootstrapPaging,
-    frames: &mut BootFrameAllocator<'_, '_>,
+    access: &mut impl FrameAccess,
+    frames: &mut impl FrameAllocator,
   ) -> Result<Self, PagingError> {
-    let root = bootstrap.allocate_page_table(frames)?;
+    let root = access.allocate_page_table(frames)?;
 
     logging::debug!(
       Paging,
@@ -581,13 +470,17 @@ impl Sv39PageTable {
     reason = "VirtRange bounds are ordered, and page offsets fit within the \
               validated virtual and physical spans"
   )]
+  #[expect(
+    clippy::needless_pass_by_ref_mut,
+    reason = "the mutable borrow keeps the root exclusively controlled while its tables change"
+  )]
   fn map_range(
     &mut self,
-    bootstrap: &mut BootstrapPaging,
+    access: &mut impl FrameAccess,
     virtual_range: VirtRange,
     physical_start: PhysFrame,
-    permissions: usize,
-    frames: &mut BootFrameAllocator<'_, '_>,
+    permissions: PagePermissions,
+    frames: &mut impl FrameAllocator,
   ) -> Result<(), PagingError> {
     let start = virtual_range.start().as_usize();
     let end = virtual_range.end().as_usize();
@@ -623,7 +516,7 @@ impl Sv39PageTable {
       Paging,
       "mapping range va=[{start:#x}, {end:#x}) -> pa={physical_base:#x} \
        pages={page_count} page_size={PAGE_SIZE} perms={} (supervisor)",
-      PtePermissions(permissions),
+      PtePermissions(permission_bits(permissions)),
     );
 
     for page_index in 0..page_count {
@@ -638,97 +531,95 @@ impl Sv39PageTable {
         });
       };
 
-      self.map_page(bootstrap, virtual_address, frame, permissions, frames)?;
+      map_page(
+        self.root.frame(),
+        access,
+        virtual_address,
+        frame,
+        permissions,
+        frames,
+      )?;
     }
 
     Ok(())
   }
+}
 
-  /// Maps one 4 KiB virtual page to `physical_frame`.
-  ///
-  /// `permissions` contains the Sv39 `R`, `W`, and `X` bits for the leaf.
-  /// Valid/accessed state is added automatically, as is the dirty bit for
-  /// writable mappings.
-  ///
-  /// # Errors
-  ///
-  /// Returns an error if the virtual address is invalid or unaligned, physical
-  /// frames required for intermediate tables cannot be allocated, an existing
-  /// intermediate entry is malformed, or the virtual page is already mapped.
-  #[expect(
-    clippy::needless_pass_by_ref_mut,
-    reason = "mapping a page mutates the address space represented by this \
-              value, even though its page-table memory is modified indirectly"
-  )]
-  fn map_page(
-    &mut self,
-    bootstrap: &mut BootstrapPaging,
-    virtual_address: VirtAddr,
-    physical_frame: PhysFrame,
-    permissions: usize, // TODO: Make permissions explicitly a type
-    frames: &mut BootFrameAllocator<'_, '_>,
-  ) -> Result<(), PagingError> {
-    let address = virtual_address.as_usize();
+/// Maps one 4 KiB virtual page to `physical_frame`.
+///
+/// `permissions` describes supervisor-only access through the leaf.
+/// Valid/accessed state is added automatically, as is the dirty bit for
+/// writable mappings.
+///
+/// # Errors
+///
+/// Returns an error if the virtual address is invalid or unaligned, physical
+/// frames required for intermediate tables cannot be allocated, an existing
+/// intermediate entry is malformed, or the virtual page is already mapped.
+fn map_page(
+  root: PhysFrame,
+  access: &mut impl FrameAccess,
+  virtual_address: VirtAddr,
+  physical_frame: PhysFrame,
+  permissions: PagePermissions,
+  frames: &mut impl FrameAllocator,
+) -> Result<(), PagingError> {
+  let address = virtual_address.as_usize();
 
-    if address & PAGE_MASK != 0 {
-      return Err(PagingError::VirtualAddressNotPageAligned { address });
-    }
+  if address & PAGE_MASK != 0 {
+    return Err(PagingError::VirtualAddressNotPageAligned { address });
+  }
 
-    if address >= SV39_LOW_HALF_END && address < SV39_HIGH_HALF_BASE {
-      return Err(PagingError::VirtualAddressNotCanonical { address });
-    }
+  if (SV39_LOW_HALF_END..SV39_HIGH_HALF_BASE).contains(&address) {
+    return Err(PagingError::VirtualAddressNotCanonical { address });
+  }
 
-    if permissions & !PTE_LEAF_MASK != 0
-      || permissions & PTE_LEAF_MASK == 0
-      || permissions & PTE_WRITE != 0 && permissions & PTE_READ == 0
-    {
-      return Err(PagingError::InvalidLeafPermissions { permissions });
-    }
+  let permissions = permission_bits(permissions);
 
-    let vpn2 = (address >> GIGAPAGE_SHIFT) & VPN_MASK;
-    let vpn1 = (address >> MEGAPAGE_SHIFT) & VPN_MASK;
-    let vpn0 = (address >> PAGE_SHIFT) & VPN_MASK;
+  let mut flags = PTE_VALID | PTE_ACCESSED | permissions;
 
-    let level_1 = bootstrap.next_table(self.root.frame(), vpn2, frames)?;
-    let level_0 = bootstrap.next_table(level_1, vpn1, frames)?;
+  if permissions & PTE_WRITE != 0 {
+    flags |= PTE_DIRTY;
+  }
 
-    let existing = bootstrap.read_page_table_entry(level_0, vpn0)?;
+  let entry = page_table_entry(physical_frame.start_address(), flags)?;
 
-    if existing != 0 {
-      return Err(PagingError::PageAlreadyMapped {
-        address,
-        entry: existing,
-      });
-    }
+  let vpn2 = (address >> GIGAPAGE_SHIFT) & VPN_MASK;
+  let vpn1 = (address >> MEGAPAGE_SHIFT) & VPN_MASK;
+  let vpn0 = (address >> PAGE_SHIFT) & VPN_MASK;
 
-    let mut flags = PTE_VALID | PTE_ACCESSED | permissions;
+  let level_1 = access.next_table(root, vpn2, frames)?;
+  let level_0 = access.next_table(level_1, vpn1, frames)?;
 
-    if permissions & PTE_WRITE != 0 {
-      flags |= PTE_DIRTY;
-    }
+  let existing = access.read_page_table_entry(level_0, vpn0)?;
 
-    let entry = page_table_entry(physical_frame.start_address(), flags)?;
+  if existing != 0 {
+    return Err(PagingError::PageAlreadyMapped {
+      address,
+      entry: existing,
+    });
+  }
 
-    #[cfg(all(feature = "log-trace", feature = "log-paging"))]
-    {
-      bootstrap.write_page_table_entry(level_0, vpn0, entry)?;
+  access.write_page_table_entry(level_0, vpn0, entry)?;
 
-      logging::trace!(
-        Paging,
-        "installed leaf va={address:#x} -> pa={:#x} size={PAGE_SIZE} perms={} \
-         table_pa={:#x} index={vpn0} pte={entry:#x}",
-        physical_frame.start_address(),
-        PtePermissions(flags),
-        level_0.start_address(),
-      );
+  logging::trace!(
+    Paging,
+    "installed leaf va={address:#x} -> pa={:#x} size={PAGE_SIZE} perms={} \
+     table_pa={:#x} index={vpn0} pte={entry:#x}",
+    physical_frame.start_address(),
+    PtePermissions(flags),
+    level_0.start_address(),
+  );
 
-      Ok(())
-    }
+  Ok(())
+}
 
-    #[cfg(not(all(feature = "log-trace", feature = "log-paging")))]
-    {
-      bootstrap.write_page_table_entry(level_0, vpn0, entry)
-    }
+/// Encodes the supported supervisor-only permissions as Sv39 leaf bits.
+const fn permission_bits(permissions: PagePermissions) -> usize {
+  match permissions {
+    PagePermissions::ReadOnly => PTE_READ,
+    PagePermissions::ReadWrite => PTE_READ | PTE_WRITE,
+    PagePermissions::ReadExecute => PTE_READ | PTE_EXECUTE,
   }
 }
 
@@ -781,7 +672,7 @@ pub(crate) enum PagingError {
     physical_range: PhysRange,
   },
 
-  /// No physical frame remained for a required page table.
+  /// No physical frame remained for a requested allocation or page table.
   OutOfPhysicalFrames,
 
   /// A virtual address supplied for a 4 KiB mapping was not page-aligned.
@@ -821,10 +712,16 @@ pub(crate) enum PagingError {
     index: usize,
   },
 
-  /// The requested Sv39 leaf permissions were invalid.
-  InvalidLeafPermissions {
-    /// Requested raw R/W/X permission bits.
-    permissions: usize,
+  /// Runtime kernel mappings must stay in the canonical upper half.
+  VirtualAddressNotKernel {
+    /// Address outside the canonical kernel half.
+    address: usize,
+  },
+
+  /// A runtime mapping targeted the reserved temporary frame-window page.
+  ReservedVirtualPage {
+    /// Reserved virtual page.
+    address: usize,
   },
 
   /// The bootstrap paging capability has already been claimed.
