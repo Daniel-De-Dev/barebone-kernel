@@ -145,7 +145,7 @@ extern "C" fn main(hart_id: usize, dtb: usize) -> ! {
   // the boot environment entering this hart with supervisor interrupts disabled
   // and does not enable them before this transition. No other hart accesses
   // these paging structures.
-  let kernel_paging = match unsafe {
+  let mut kernel_paging = match unsafe {
     bootstrap_paging.into_kernel(
       kernel_phys_start,
       &kernel_sections,
@@ -169,8 +169,32 @@ extern "C" fn main(hart_id: usize, dtb: usize) -> ! {
   logging::info!(Paging, "Kernel paging active");
   logging::trace!(Paging, "Kernel paging state:\n{:#?}", kernel_paging);
 
+  let _heap = init_kernel_heap(&mut kernel_paging, &mut frames);
+
   logging::info!(Boot, "kernel halting");
   arch::halt()
+}
+
+/// Claims and initializes a kernel heap, halting on initialization failure.
+fn init_kernel_heap(
+  paging: &mut arch::KernelPaging,
+  frames: &mut impl memory::FrameAllocator,
+) -> memory::KernelHeap {
+  let heap = match paging.claim_heap(frames) {
+    Ok(heap) => heap,
+    Err(error) => {
+      logging::error!(
+        Boot,
+        "Failed to initialize kernel heap ({error:?}); halting"
+      );
+      arch::halt();
+    }
+  };
+
+  logging::info!(Boot, "Kernel heap ready");
+  logging::trace!(Boot, "Kernel heap state:\n{heap:#?}");
+
+  heap
 }
 
 /// Reports the FDT and its memory ranges when verbose boot logging is enabled.

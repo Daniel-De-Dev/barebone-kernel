@@ -12,8 +12,8 @@ use super::{
 use crate::{
   logging,
   memory::{
-    AllocatedFrame, FrameAllocator, KernelSections, PagePermissions, PhysAddr, PhysFrame,
-    PhysRange, VirtAddr, VirtRange,
+    AllocatedFrame, FrameAllocator, HeapBacking, HeapError, KernelHeap, KernelSections,
+    PagePermissions, PhysAddr, PhysFrame, PhysRange, VirtAddr, VirtRange,
   },
 };
 
@@ -34,6 +34,16 @@ const FIXMAP_FRAME_BASE: usize = FIXMAP_TABLE_BASE + PAGE_SIZE;
 
 /// Index of the temporary frame slot within its controlling L0 table.
 const FIXMAP_FRAME_INDEX: usize = (FIXMAP_FRAME_BASE >> PAGE_SHIFT) & VPN_MASK;
+
+/// Inclusive base of the upper-half root slot designated for heap allocation.
+const HEAP_START: usize = 0xffff_ffe0_0000_0000;
+
+/// Exclusive upper bound of the heap reservation.
+const HEAP_END: usize = HEAP_START + GIGAPAGE_SIZE;
+
+/// Fixed virtual range available for a heap claim.
+const HEAP_RANGE: VirtRange = VirtRange::new(VirtAddr::new(HEAP_START), VirtAddr::new(HEAP_END))
+  .expect("constant heap bounds must be ordered");
 
 /// Exclusive control of the active kernel address space.
 ///
@@ -59,6 +69,9 @@ pub(crate) struct KernelPaging {
 
   /// Writable PTE for the temporary frame slot, through the fixed table alias.
   frame_slot: *mut usize,
+
+  /// Whether the heap reservation was claimed, including failed backing attempts.
+  heap_claimed: bool,
 }
 
 impl fmt::Debug for KernelPaging {
@@ -71,6 +84,7 @@ impl fmt::Debug for KernelPaging {
       .field("fixmap_table_alias", &VirtAddr::new(FIXMAP_TABLE_BASE))
       .field("frame_slot_pointer", &self.frame_slot)
       .field("frame_slot_alias", &VirtAddr::new(FIXMAP_FRAME_BASE))
+      .field("heap_claimed", &self.heap_claimed)
       .finish()
   }
 }
@@ -171,6 +185,7 @@ impl BootstrapPaging {
       dtb_mapping,
       frame_slot: ptr::with_exposed_provenance_mut::<usize>(FIXMAP_TABLE_BASE)
         .wrapping_add(FIXMAP_FRAME_INDEX),
+      heap_claimed: false,
     };
 
     // SAFETY:
@@ -187,11 +202,72 @@ impl BootstrapPaging {
 }
 
 impl KernelPaging {
+  /// Claims the fixed heap reservation and backs its highest page.
+  ///
+  /// The root slot must be empty. Once claimed, ordinary `map_page` calls cannot
+  /// use this range, and dropping the heap does not permit a second claim.
+  /// Use only on the owning hart with this root active and supervisor
+  /// interrupts disabled. No other hart or trap handler may access these
+  /// tables or the temporary window concurrently.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error if the heap was already claimed, its root slot is in use,
+  /// or its first page cannot be backed. Backing failure leaves the reservation
+  /// claimed and retains any allocated frames and installed table entries.
+  pub(crate) fn claim_heap(
+    &mut self,
+    frames: &mut impl FrameAllocator,
+  ) -> Result<KernelHeap, HeapError<PagingError>> {
+    if self.heap_claimed {
+      return Err(HeapError::Backing(PagingError::KernelHeapAlreadyClaimed));
+    }
+
+    let index = (HEAP_START >> GIGAPAGE_SHIFT) & VPN_MASK;
+    let entry = self
+      .read_page_table_entry(self.root.frame(), index)
+      .map_err(HeapError::Backing)?;
+
+    if entry != 0 {
+      return Err(HeapError::Backing(PagingError::RootEntryInUse {
+        index,
+        entry,
+      }));
+    }
+
+    self.heap_claimed = true;
+    let mut backing = self.heap_backing(frames);
+
+    // SAFETY:
+    // The empty root slot covers the entire fixed heap range. The one-shot
+    // claim and ordinary mapper's reservation check prevent another allocator
+    // or unrelated mapping from using it. The backing retains every installed
+    // heap mapping and all physical frames are permanently reserved.
+    unsafe { KernelHeap::new(HEAP_RANGE, &mut backing) }
+  }
+
+  /// Borrows paging and frame allocation to back this hart's claimed heap.
+  ///
+  /// The adapter borrows both arguments for its lifetime. Use it only for pages
+  /// requested by the heap claimed from this address space, on the owning hart
+  /// with this root active and supervisor interrupts disabled. No other hart or
+  /// trap handler may access the tables or temporary window concurrently.
+  pub(crate) fn heap_backing<F: FrameAllocator>(
+    &mut self,
+    frames: &mut F,
+  ) -> impl HeapBacking<Error = PagingError> {
+    KernelHeapBacking {
+      paging: self,
+      frames,
+    }
+  }
+
   /// Maps one previously unmapped upper-half virtual page to an owned frame.
   ///
   /// The 4 KiB mapping is supervisor-only and remains installed after this
   /// call. Missing intermediate tables are allocated and zeroed through the
   /// normal kernel frame window. The frame-window page itself is reserved.
+  /// A claimed heap reservation is also excluded from this general mapper.
   ///
   /// Use only on the owning hart with this root active and supervisor
   /// interrupts disabled. No other hart or trap handler may access these
@@ -204,6 +280,31 @@ impl KernelPaging {
   /// malformed intermediate entries. Local translations are synchronized
   /// even after partial failure. Remote invalidation is not supported.
   pub(crate) fn map_page(
+    &mut self,
+    virtual_address: VirtAddr,
+    frame: AllocatedFrame,
+    permissions: PagePermissions,
+    frames: &mut impl FrameAllocator,
+  ) -> Result<(), PagingError> {
+    let address = virtual_address.as_usize();
+
+    if self.heap_claimed && (HEAP_START..HEAP_END).contains(&address) {
+      return Err(PagingError::ReservedVirtualPage { address });
+    }
+
+    self.install_page(virtual_address, frame, permissions, frames)
+  }
+
+  /// Validates and installs one supervisor-only upper-half page mapping.
+  ///
+  /// The caller must enforce virtual reservation ownership. Page-table changes
+  /// are followed by local translation synchronization, including partial failure.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error for invalid addresses, conflicts, or failed table access
+  /// or allocation.
+  fn install_page(
     &mut self,
     virtual_address: VirtAddr,
     frame: AllocatedFrame,
@@ -320,6 +421,46 @@ impl KernelPaging {
   /// or the temporary frame slot is already occupied.
   pub(crate) fn zero_frame(&mut self, frame: &mut AllocatedFrame) -> Result<(), PagingError> {
     FrameAccess::zero_frame(self, frame)
+  }
+}
+
+/// Backs heap pages using an active kernel root and a frame allocator.
+struct KernelHeapBacking<'paging, 'frames, F> {
+  /// Exclusive control of the active kernel root.
+  paging: &'paging mut KernelPaging,
+
+  /// Source of permanently reserved data and page-table frames.
+  frames: &'frames mut F,
+}
+
+// SAFETY:
+// Each successful request maps a fresh, exclusively allocated RAM frame at one
+// page of the claimed heap. The frame is zeroed first and the leaf is RW, NX,
+// and supervisor-only. Neither data nor table frames are reclaimed. Earlier
+// mappings survive later errors. install_page never replaces an existing leaf
+// and cannot return an error after installing the requested heap leaf.
+unsafe impl<F: FrameAllocator> HeapBacking for KernelHeapBacking<'_, '_, F> {
+  type Error = PagingError;
+
+  fn map_page(&mut self, address: VirtAddr) -> Result<(), Self::Error> {
+    let value = address.as_usize();
+
+    if !self.paging.heap_claimed || !(HEAP_START..HEAP_END).contains(&value) {
+      return Err(PagingError::ReservedVirtualPage { address: value });
+    }
+
+    if value & PAGE_MASK != 0 {
+      return Err(PagingError::VirtualAddressNotPageAligned { address: value });
+    }
+
+    let mut frame = self
+      .frames
+      .allocate()
+      .ok_or(PagingError::OutOfPhysicalFrames)?;
+    self.paging.zero_frame(&mut frame)?;
+    self
+      .paging
+      .install_page(address, frame, PagePermissions::ReadWrite, self.frames)
   }
 }
 

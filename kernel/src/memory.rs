@@ -1,17 +1,21 @@
 //! Core kernel memory abstractions.
 //!
-//! This module provides the common physical-memory vocabulary used by the
-//! kernel's memory-management code.
+//! This module provides address, range, frame, and heap types for memory
+//! management.
 //!
 //! Physical and virtual addresses are represented by [`PhysAddr`] and
 //! [`VirtAddr`]. Physical frame representation and boot-time frame
 //! allocation are implemented by the [`frame`] submodule.
+//! The [`heap`] submodule provides virtual bump allocation with page backing
+//! supplied through [`HeapBacking`].
 
 mod address;
 mod frame;
+mod heap;
 
 pub(crate) use address::{PhysAddr, VirtAddr};
 pub(crate) use frame::{AllocatedFrame, BootFrameAllocator, FrameAllocator, PhysFrame};
+pub(crate) use heap::{HeapBacking, HeapError, KernelHeap};
 
 /// Access permitted through a supervisor-only virtual page mapping.
 #[derive(Clone, Copy, Debug)]

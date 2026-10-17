@@ -718,7 +718,7 @@ pub(crate) enum PagingError {
     address: usize,
   },
 
-  /// A runtime mapping targeted the reserved temporary frame-window page.
+  /// A runtime mapping targeted a reserved virtual page or the claimed heap.
   ReservedVirtualPage {
     /// Reserved virtual page.
     address: usize,
@@ -726,6 +726,9 @@ pub(crate) enum PagingError {
 
   /// The bootstrap paging capability has already been claimed.
   BootstrapPagingAlreadyClaimed,
+
+  /// The kernel heap's virtual reservation has already been claimed.
+  KernelHeapAlreadyClaimed,
 }
 
 /// Returns the physical address of the active Sv39 root page table.
