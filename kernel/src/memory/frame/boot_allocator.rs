@@ -1,7 +1,6 @@
 //! Boot-time physical frame allocation.
 //!
-//! This module provides a simple allocator for discovering and
-//! allocating physical frames during early kernel initialization.
+//! This module provides a monotonic allocator over FDT-described RAM.
 //!
 //! Physical memory is obtained from the FDT `/memory` ranges. Frames
 //! overlapping the kernel's boot-time memory range, the DTB, FDT memory
@@ -63,16 +62,15 @@ struct CurrentMemoryRange {
   end: PhysAddr,
 }
 
-/// Monotonic physical frame allocator used during early kernel initialization.
+/// Monotonic physical frame allocator over FDT-described RAM.
 ///
-/// The allocator retains the FDT so reservation information can be consulted
-/// while its memory ranges are traversed.
+/// The allocator owns its parsed FDT view so reservation information can be
+/// consulted while its memory ranges are traversed.
 ///
-/// `'fdt` is the lifetime of the borrowed [`Fdt`] instance, while `'dtb` is the
-/// lifetime of the underlying Device Tree Blob memory referenced by the FDT.
-pub(crate) struct BootFrameAllocator<'fdt, 'dtb> {
+/// `'dtb` is the lifetime of the Device Tree Blob memory borrowed by that view.
+pub(crate) struct BootFrameAllocator<'dtb> {
   /// FDT used to discover reserved physical-memory regions.
-  fdt: &'fdt Fdt<'dtb>,
+  fdt: Fdt<'dtb>,
 
   /// Remaining FDT-described physical memory ranges to traverse.
   memory_ranges: MemoryRanges<'dtb>,
@@ -147,7 +145,7 @@ fn validate_memory_ranges(fdt: &Fdt<'_>) -> Result<(), BootFrameAllocatorError> 
 // move this one-shot ownership guard above the individual implementations.
 static BOOT_FRAME_ALLOCATOR_CLAIMED: AtomicBool = AtomicBool::new(false);
 
-impl<'fdt, 'dtb> BootFrameAllocator<'fdt, 'dtb> {
+impl<'dtb> BootFrameAllocator<'dtb> {
   /// Claims the boot-time physical frame allocator.
   ///
   /// This allocator can be claimed only once. A successful claim remains
@@ -155,10 +153,6 @@ impl<'fdt, 'dtb> BootFrameAllocator<'fdt, 'dtb> {
   /// dropped.
   ///
   /// # Safety
-  ///
-  /// This capability must be used only on the claiming hart while its
-  /// bootstrap root remains active. Supervisor interrupts must remain
-  /// disabled during temporary frame access.
   ///
   /// Every FDT-described memory range not excluded by `kernel`, `dtb`, or the
   /// FDT's reservation information must refer to physical RAM that the kernel
@@ -176,11 +170,11 @@ impl<'fdt, 'dtb> BootFrameAllocator<'fdt, 'dtb> {
   /// [`BootFrameAllocatorError::AlreadyClaimed`] if the boot frame allocator has
   /// already been claimed.
   pub(crate) unsafe fn claim(
-    fdt: &'fdt Fdt<'dtb>,
+    fdt: Fdt<'dtb>,
     kernel: PhysRange,
     dtb: PhysRange,
   ) -> Result<Self, BootFrameAllocatorError> {
-    validate_memory_ranges(fdt)?;
+    validate_memory_ranges(&fdt)?;
 
     if BOOT_FRAME_ALLOCATOR_CLAIMED
       .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
@@ -203,9 +197,11 @@ impl<'fdt, 'dtb> BootFrameAllocator<'fdt, 'dtb> {
       dtb.end(),
     );
 
+    let memory_ranges = fdt.memory_ranges();
+
     Ok(Self {
       fdt,
-      memory_ranges: fdt.memory_ranges(),
+      memory_ranges,
       current: None,
       kernel,
       dtb,

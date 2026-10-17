@@ -8,12 +8,15 @@
 //! allocation are implemented by the [`frame`] submodule.
 //! The [`heap`] submodule provides virtual bump allocation with page backing
 //! supplied through [`HeapBacking`].
+//! The [`allocator`] submodule owns the memory state used for Rust allocation.
 
 mod address;
+mod allocator;
 mod frame;
 mod heap;
 
 pub(crate) use address::{PhysAddr, VirtAddr};
+pub(crate) use allocator::{AllocatorInitError, initialize as init_allocator};
 pub(crate) use frame::{AllocatedFrame, BootFrameAllocator, FrameAllocator, PhysFrame};
 pub(crate) use heap::{HeapBacking, HeapError, KernelHeap};
 

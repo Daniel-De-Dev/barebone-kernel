@@ -4,15 +4,17 @@
 //! kernel and an RV64 execution environment.
 
 mod boot;
+mod interrupt;
 mod paging;
 mod time;
 mod trap;
 
+use core::arch::asm;
+
+pub(crate) use interrupt::{InterruptGuard, disable as disable_interrupts};
 pub(crate) use paging::{BootstrapPaging, KernelPaging, PagingError};
 pub(crate) use time::{init as init_time, ticks as time_ticks};
 pub(crate) use trap::init as init_trap;
-
-use core::arch::asm;
 
 /// Parks the current hart indefinitely.
 ///

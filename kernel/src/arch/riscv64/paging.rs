@@ -137,9 +137,7 @@ const BOOT_FDT_WINDOW_GIGAPAGES: usize = 5;
 
 /// Root-table index reserved for temporary access to physical frames.
 ///
-/// VPN[2] 511 corresponds to the final 1 GiB of the canonical Sv39
-/// higher-half address space. The bootstrap kernel occupies VPN[2] 510,
-/// while the temporary FDT window begins at VPN[2] 256.
+/// The final root entry covers the highest 1 GiB of canonical Sv39 addresses.
 const BOOT_FRAME_WINDOW_VPN2: usize = VPN_MASK;
 
 /// First virtual address of the temporary physical-frame access window.

@@ -7,6 +7,9 @@
 
 #![no_std]
 #![no_main]
+#![feature(alloc_error_handler)]
+
+extern crate alloc;
 
 mod arch;
 mod console;
@@ -14,7 +17,8 @@ mod firmware;
 mod logging;
 mod memory;
 
-use core::panic::PanicInfo;
+use core::{alloc::Layout, panic::PanicInfo};
+
 use fdt::Fdt;
 use memory::{BootFrameAllocator, PhysAddr, PhysRange, kernel_sections};
 
@@ -27,6 +31,8 @@ use memory::{BootFrameAllocator, PhysAddr, PhysRange, kernel_sections};
 /// This function does not return.
 #[unsafe(no_mangle)]
 extern "C" fn main(hart_id: usize, dtb: usize) -> ! {
+  let _boot_interrupts = arch::disable_interrupts();
+
   let dtb_phys = PhysAddr::new(dtb);
   let kernel_phys_start = memory::kernel_physical_start();
 
@@ -78,9 +84,10 @@ extern "C" fn main(hart_id: usize, dtb: usize) -> ! {
 
   // SAFETY:
   // `BootstrapPaging::map_fdt` established a readable mapping containing the
-  // complete DTB. `into_kernel` transition preserves all pages backing this
-  // blob at the same virtual alias.
-  let fdt = match unsafe { Fdt::from_ptr(dtb_ptr) } {
+  // complete DTB. The `into_kernel` transition preserves all pages backing this
+  // blob at the same virtual alias. That mapping remains readable and unchanged
+  // for the kernel's lifetime, and its frames are excluded from allocation.
+  let fdt: Fdt<'static> = match unsafe { Fdt::from_ptr(dtb_ptr) } {
     Ok(fdt) => fdt,
     Err(error) => {
       logging::error!(
@@ -123,7 +130,7 @@ extern "C" fn main(hart_id: usize, dtb: usize) -> ! {
   // footprint. `dtb_range` covers the same firmware-provided DTB backing `fdt`.
   // The FDT is trusted to describe all other physical memory that is
   // unavailable for allocation through its reservation information.
-  let mut frames = match unsafe { BootFrameAllocator::claim(&fdt, kernel_range, dtb_range) } {
+  let mut frames = match unsafe { BootFrameAllocator::claim(fdt, kernel_range, dtb_range) } {
     Ok(frames) => frames,
     Err(error) => {
       logging::error!(
@@ -140,12 +147,11 @@ extern "C" fn main(hart_id: usize, dtb: usize) -> ! {
   // These sections come directly from the live kernel's linker symbols, and
   // the linker provides the physical load address. They cover the live
   // code, trap vector, constants, data, and stack. `dtb_range` and `dtb_virtual`
-  // describe the complete blob backing `fdt` and the frame allocator. No other
-  // retained reference depends on a bootstrap-only mapping. Startup relies on
-  // the boot environment entering this hart with supervisor interrupts disabled
-  // and does not enable them before this transition. No other hart accesses
-  // these paging structures.
-  let mut kernel_paging = match unsafe {
+  // describe the complete blob retained by the frame allocator. No other
+  // retained reference depends on a bootstrap-only mapping. `_boot_interrupts`
+  // keeps supervisor interrupts disabled throughout this transition. No other
+  // hart accesses these paging structures.
+  let kernel_paging = match unsafe {
     bootstrap_paging.into_kernel(
       kernel_phys_start,
       &kernel_sections,
@@ -169,18 +175,15 @@ extern "C" fn main(hart_id: usize, dtb: usize) -> ! {
   logging::info!(Paging, "Kernel paging active");
   logging::trace!(Paging, "Kernel paging state:\n{:#?}", kernel_paging);
 
-  let _heap = init_kernel_heap(&mut kernel_paging, &mut frames);
+  init_kernel_allocator(kernel_paging, frames);
 
   logging::info!(Boot, "kernel halting");
   arch::halt()
 }
 
-/// Claims and initializes a kernel heap, halting on initialization failure.
-fn init_kernel_heap(
-  paging: &mut arch::KernelPaging,
-  frames: &mut impl memory::FrameAllocator,
-) -> memory::KernelHeap {
-  let heap = match paging.claim_heap(frames) {
+/// Claims a heap and installs Rust allocation state, halting on failure.
+fn init_kernel_allocator(mut paging: arch::KernelPaging, mut frames: BootFrameAllocator<'static>) {
+  let heap = match paging.claim_heap(&mut frames) {
     Ok(heap) => heap,
     Err(error) => {
       logging::error!(
@@ -194,7 +197,23 @@ fn init_kernel_heap(
   logging::info!(Boot, "Kernel heap ready");
   logging::trace!(Boot, "Kernel heap state:\n{heap:#?}");
 
-  heap
+  // SAFETY:
+  // This heap was claimed from paging, whose root remains active on the sole
+  // running hart. No other hart uses allocation, and the permanently mapped DTB
+  // is covered by the frame allocator's excluded physical range. Moving all
+  // three capabilities leaves the global allocator as their only owner.
+  let result: Result<(), memory::AllocatorInitError> =
+    unsafe { memory::init_allocator(heap, paging, frames) };
+
+  if let Err(error) = result {
+    logging::error!(
+      Boot,
+      "Failed to initialize Rust allocator ({error:?}); halting"
+    );
+    arch::halt();
+  }
+
+  logging::info!(Boot, "Rust global allocator ready");
 }
 
 /// Reports the FDT and its memory ranges when verbose boot logging is enabled.
@@ -218,5 +237,17 @@ fn log_fdt(fdt: &Fdt<'_>) {
 /// Handles unrecoverable Rust panics by halting the current hart.
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
+  arch::halt()
+}
+
+/// Reports a Rust allocation failure and halts without allocating.
+#[cfg_attr(not(rust_analyzer), alloc_error_handler)]
+fn allocation_error(layout: Layout) -> ! {
+  logging::error!(
+    Boot,
+    "Rust allocation failed (size={}, align={}); halting",
+    layout.size(),
+    layout.align(),
+  );
   arch::halt()
 }

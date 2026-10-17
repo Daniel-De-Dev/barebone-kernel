@@ -17,6 +17,7 @@ PTE
 Qemu
 RV64
 SBI
+SIE
 SPL
 StarFive
 Sv39
@@ -24,6 +25,7 @@ VisionFive
 devicetree
 devicetrees
 representable
+sstatus
 stackless
 u32
 usize

@@ -32,7 +32,7 @@ pub(crate) trait FrameAllocator {
   fn allocate(&mut self) -> Option<AllocatedFrame>;
 }
 
-impl FrameAllocator for BootFrameAllocator<'_, '_> {
+impl FrameAllocator for BootFrameAllocator<'_> {
   fn allocate(&mut self) -> Option<AllocatedFrame> {
     Self::allocate(self)
   }

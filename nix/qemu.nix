@@ -104,7 +104,8 @@
             for expected in \
               "kernel entered" \
               "Kernel paging active" \
-              "Kernel heap ready"; do
+              "Kernel heap ready" \
+              "Rust global allocator ready"; do
               if ! grep -Fq "$expected" "$log"; then
                 echo "kernel did not reach: $expected" >&2
                 cat "$log" >&2
