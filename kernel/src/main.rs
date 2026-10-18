@@ -17,7 +17,7 @@ mod firmware;
 mod logging;
 mod memory;
 
-use core::{alloc::Layout, panic::PanicInfo};
+use core::{alloc::Layout, num::NonZeroU32, panic::PanicInfo, time::Duration};
 
 use fdt::Fdt;
 use memory::{BootFrameAllocator, PhysAddr, PhysRange, kernel_sections};
@@ -31,7 +31,7 @@ use memory::{BootFrameAllocator, PhysAddr, PhysRange, kernel_sections};
 /// This function does not return.
 #[unsafe(no_mangle)]
 extern "C" fn main(hart_id: usize, dtb: usize) -> ! {
-  let _boot_interrupts = arch::disable_interrupts();
+  let boot_interrupts = arch::disable_interrupts();
 
   let dtb_phys = PhysAddr::new(dtb);
   let kernel_phys_start = memory::kernel_physical_start();
@@ -102,6 +102,11 @@ extern "C" fn main(hart_id: usize, dtb: usize) -> ! {
   #[cfg(all(feature = "log-trace", feature = "log-boot"))]
   log_fdt(&fdt);
 
+  let Some(timebase_hz) = timer_frequency(&fdt) else {
+    logging::error!(Timer, "Missing or invalid CPU timebase frequency, halting");
+    arch::halt();
+  };
+
   let Some(kernel_range) = memory::kernel_range(kernel_phys_start) else {
     logging::error!(
       Frames,
@@ -148,7 +153,7 @@ extern "C" fn main(hart_id: usize, dtb: usize) -> ! {
   // the linker provides the physical load address. They cover the live
   // code, trap vector, constants, data, and stack. `dtb_range` and `dtb_virtual`
   // describe the complete blob retained by the frame allocator. No other
-  // retained reference depends on a bootstrap-only mapping. `_boot_interrupts`
+  // retained reference depends on a bootstrap-only mapping. `boot_interrupts`
   // keeps supervisor interrupts disabled throughout this transition. No other
   // hart accesses these paging structures.
   let kernel_paging = match unsafe {
@@ -177,8 +182,60 @@ extern "C" fn main(hart_id: usize, dtb: usize) -> ! {
 
   init_kernel_allocator(kernel_paging, frames);
 
-  logging::info!(Boot, "kernel halting");
-  arch::halt()
+  run_kernel(timebase_hz, boot_interrupts)
+}
+
+/// Arms a periodic timer and confirms repeated interrupt delivery before idling.
+fn run_kernel(timebase_hz: NonZeroU32, boot_interrupts: arch::InterruptGuard) -> ! {
+  let period = Duration::from_millis(10);
+
+  // SAFETY:
+  // This is the sole running hart. Its trap vector handles supervisor timer
+  // interrupts, the kernel stack remains mapped, and no other code programs
+  // the timer. Counter access was probed here and is preserved by firmware.
+  let result: Result<(), arch::TimerError> = unsafe { arch::init_timer(timebase_hz, period) };
+
+  if let Err(error) = result {
+    logging::error!(
+      Timer,
+      "Failed to initialize supervisor timer ({error:?}), halting"
+    );
+    arch::halt();
+  }
+
+  logging::info!(
+    Timer,
+    "Supervisor timer armed (period={} ms, timebase={} Hz)",
+    period.as_millis(),
+    timebase_hz.get(),
+  );
+
+  let initial_ticks = arch::timer_ticks();
+  drop(boot_interrupts);
+
+  // SAFETY:
+  // The timer is the only unmasked source, and its handler is ready. Execution
+  // remains on the mapped supervisor stack with no live memory-state borrow.
+  unsafe { arch::enable_interrupts() };
+
+  while arch::timer_ticks().wrapping_sub(initial_ticks) < 2 {
+    core::hint::spin_loop();
+  }
+
+  logging::info!(Timer, "Supervisor timer interrupt delivery confirmed");
+
+  loop {
+    core::hint::spin_loop();
+  }
+}
+
+/// Reads a non-zero, 32-bit CPU timebase frequency from the device tree.
+fn timer_frequency(fdt: &Fdt<'_>) -> Option<NonZeroU32> {
+  let cpus = fdt.root().child(b"cpus")?;
+  let property = cpus.property(b"timebase-frequency")?;
+  let bytes: [u8; 4] = property.value().try_into().ok()?;
+
+  NonZeroU32::new(u32::from_be_bytes(bytes))
 }
 
 /// Claims a heap and installs Rust allocation state, halting on failure.

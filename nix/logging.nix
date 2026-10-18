@@ -3,6 +3,8 @@ let
     "log-frames"
     "log-boot"
     "log-paging"
+    "log-timer"
+    "log-trap"
   ];
 
   levelFeatures = {

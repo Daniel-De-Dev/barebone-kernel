@@ -105,7 +105,9 @@
               "kernel entered" \
               "Kernel paging active" \
               "Kernel heap ready" \
-              "Rust global allocator ready"; do
+              "Rust global allocator ready" \
+              "Supervisor timer armed" \
+              "Supervisor timer interrupt delivery confirmed"; do
               if ! grep -Fq "$expected" "$log"; then
                 echo "kernel did not reach: $expected" >&2
                 cat "$log" >&2

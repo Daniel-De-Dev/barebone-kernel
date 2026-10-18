@@ -1,8 +1,6 @@
 //! RISC-V Supervisor Binary Interface support.
 //!
-//! This module implements the minimal subset of the SBI Debug Console
-//! extension required by the kernel, as specified by
-//! [the RISC-V SBI documentation](https://github.com/riscv-non-isa/riscv-sbi-doc/blob/8a545effe9b50484ff897d9815d7d9015cdef203/src/ext-debug-console.adoc).
+//! Debug Console output and absolute timer deadlines through SBI calls.
 
 use core::arch::asm;
 
@@ -11,6 +9,25 @@ const DBCN_EID: usize = 0x4442_434E;
 
 /// SBI Debug Console "write byte" function ID.
 const DBCN_WRITE_BYTE_FID: usize = 2;
+
+/// SBI Timer extension ID.
+const TIME_EID: usize = 0x5449_4d45;
+
+/// SBI Timer "set timer" function ID.
+const SET_TIMER_FID: usize = 0;
+
+/// Failures while programming an SBI timer deadline.
+#[derive(Debug)]
+pub(crate) enum SetTimerError {
+  /// The firmware does not support the Timer extension.
+  NotSupported,
+
+  /// Timer programming is not permitted.
+  Denied,
+
+  /// The firmware returned another error code.
+  Unexpected(isize),
+}
 
 /// Errors returned when writing a byte through the SBI debug console.
 #[derive(Debug)]
@@ -39,6 +56,33 @@ pub(crate) enum WriteByteError {
 /// - [`WriteByteError::Unexpected`] if the SBI implementation returns an
 ///   error not defined for this operation.
 pub(crate) fn write_byte(byte: u8) -> Result<(), WriteByteError> {
+  match call(DBCN_EID, DBCN_WRITE_BYTE_FID, u64::from(byte)) {
+    0 => Ok(()),
+    -1 => Err(WriteByteError::Failed),
+    -4 => Err(WriteByteError::Denied),
+    error => Err(WriteByteError::Unexpected(error)),
+  }
+}
+
+/// Programs an absolute deadline in time-counter ticks.
+///
+/// A future deadline clears the pending supervisor timer interrupt. This call
+/// does not enable interrupt delivery.
+///
+/// # Errors
+///
+/// Returns an error if the extension is unavailable or firmware rejects the call.
+pub(crate) fn set_timer(deadline: u64) -> Result<(), SetTimerError> {
+  match call(TIME_EID, SET_TIMER_FID, deadline) {
+    0 => Ok(()),
+    -2 => Err(SetTimerError::NotSupported),
+    -4 => Err(SetTimerError::Denied),
+    error => Err(SetTimerError::Unexpected(error)),
+  }
+}
+
+/// Calls an SBI function with one argument and returns its error code.
+fn call(extension: usize, function: usize, argument: u64) -> isize {
   let error: isize;
 
   // SAFETY: `ecall` invokes the SBI implementation using the standard SBI
@@ -48,18 +92,13 @@ pub(crate) fn write_byte(byte: u8) -> Result<(), WriteByteError> {
   unsafe {
     asm!(
       "ecall",
-      inlateout("a0") usize::from(byte) => error,
+      inlateout("a0") argument => error,
       lateout("a1") _,
-      in("a6") DBCN_WRITE_BYTE_FID,
-      in("a7") DBCN_EID,
+      in("a6") function,
+      in("a7") extension,
       options(nostack),
     );
   }
 
-  match error {
-    0 => Ok(()),
-    -1 => Err(WriteByteError::Failed),
-    -4 => Err(WriteByteError::Denied),
-    error => Err(WriteByteError::Unexpected(error)),
-  }
+  error
 }

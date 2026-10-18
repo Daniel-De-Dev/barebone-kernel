@@ -1,35 +1,31 @@
 //! Optional access to the RV64 time counter for log timestamps.
 //!
-//! Initialization tries one `rdtime`. The trap entry recovers only an
-//! illegal-instruction exception at that exact instruction; every other
-//! trap keeps its normal fatal path.
+//! Initialization probes `rdtime` once. A denied read leaves the counter
+//! unavailable to later callers.
 //!
-//! Availability is cached for the current single-hart kernel. Firmware must
-//! preserve counter access after a successful probe. Supporting other harts
-//! requires probing and retaining availability separately for each hart.
-//! Values are raw platform timebase ticks, not CPU cycles or wall-clock time.
+//! Availability belongs to the hart that performs the probe. Initialization
+//! and reads must stay on that hart. Firmware must preserve access after a
+//! successful probe. Values are raw platform timebase ticks.
 
 use core::{
   arch::{asm, global_asm},
   sync::atomic::{AtomicU8, Ordering},
 };
 
-/// Timer has not been initialized.
+/// Counter access has not been probed.
 const UNINITIALIZED: u8 = 0;
 
 /// Counter reads are disabled.
 const UNAVAILABLE: u8 = 1;
 
-/// Timer is available and can be used.
+/// Counter reads are available.
 const AVAILABLE: u8 = 2;
 
-/// Atomic state holder which decides if timer is available or not.
+/// Availability of counter reads on the probed hart.
 static STATE: AtomicU8 = AtomicU8::new(UNINITIALIZED);
 
-// The recoverable trap may clobber a0, a1, and t0, which are caller-saved.
-// It preserves t1 holding the original sstatus, ra, and all callee-saved
-// registers. Interrupts are disabled during the probe, and either return path
-// restores the original supervisor status.
+// Interrupts are disabled during the probe. Both return paths restore the
+// original supervisor status retained in t1.
 global_asm!(
   r#"
   .section .text
@@ -66,10 +62,10 @@ unsafe extern "C" {
   pub(super) fn __probe_time_unavailable();
 }
 
-/// Probes time access once, before the first timestamped log record.
+/// Probes counter access once and retains the first result.
 ///
 /// Repeated calls retain the initial result. A denied or missing counter
-/// leaves later log records free of counter reads.
+/// leaves reads unavailable.
 ///
 /// # Safety
 ///
@@ -118,7 +114,7 @@ pub(crate) fn ticks() -> Option<u64> {
   Some(ticks)
 }
 
-/// Suppresses counter reads before a fatal trap reports its diagnostics.
+/// Marks counter access unavailable for all subsequent reads.
 pub(super) fn disable() {
   STATE.store(UNAVAILABLE, Ordering::Relaxed);
 }

@@ -37,6 +37,21 @@ pub(crate) fn disable() -> InterruptGuard {
   }
 }
 
+/// Enables local supervisor interrupt delivery.
+///
+/// # Safety
+///
+/// Every unmasked source must have a handler ready on this hart. Execution
+/// must use a valid supervisor stack and hold no interrupt-sensitive borrow.
+pub(crate) unsafe fn enable() {
+  // SAFETY:
+  // The caller established interrupt readiness. Setting SIE changes only local
+  // supervisor delivery, and the assembly orders surrounding memory accesses.
+  unsafe {
+    asm!("csrsi sstatus, 2", options(nostack));
+  }
+}
+
 impl Drop for InterruptGuard {
   fn drop(&mut self) {
     if self.was_enabled {

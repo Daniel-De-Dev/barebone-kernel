@@ -4,9 +4,8 @@
 //! records are always compiled. Debug records require log-debug; trace records
 //! require log-trace, which also enables log-debug through Cargo.
 //!
-//! Debug and trace records additionally require the matching target feature:
-//! log-boot, log-frames, or log-paging. These controls are independent of the
-//! build profile and debug assertions.
+//! Debug and trace records additionally require the matching target feature.
+//! These controls are independent of the build profile and debug assertions.
 //!
 //! Disabled macro calls are removed with cfg attributes, including their
 //! argument expressions. Keep kernel operations outside logging arguments.
@@ -58,7 +57,7 @@ impl fmt::Display for Level {
 /// Subsystem responsible for a log record.
 #[derive(Clone, Copy)]
 pub(super) enum Target {
-  /// Kernel startup, firmware information, and early trap handling.
+  /// Kernel startup and firmware information.
   Boot,
 
   /// Physical frame discovery and allocation.
@@ -66,6 +65,12 @@ pub(super) enum Target {
 
   /// Address-space construction and physical-frame mappings.
   Paging,
+
+  /// Timer configuration and interrupt delivery.
+  Timer,
+
+  /// Trap entry, dispatch, and unrecoverable faults.
+  Trap,
 }
 
 impl fmt::Display for Target {
@@ -74,6 +79,8 @@ impl fmt::Display for Target {
       Self::Boot => "boot",
       Self::Frames => "frames",
       Self::Paging => "paging",
+      Self::Timer => "timer",
+      Self::Trap => "trap",
     };
 
     f.pad(target)
@@ -133,6 +140,12 @@ macro_rules! verbose {
   };
   (Paging, $level:ident, $($arg:tt)+) => {
     $crate::logging::verbose!("log-paging", $level, Paging, $($arg)+)
+  };
+  (Timer, $level:ident, $($arg:tt)+) => {
+    $crate::logging::verbose!("log-timer", $level, Timer, $($arg)+)
+  };
+  (Trap, $level:ident, $($arg:tt)+) => {
+    $crate::logging::verbose!("log-trap", $level, Trap, $($arg)+)
   };
   ($feature:literal, $level:ident, $target:ident, $($arg:tt)+) => {{
     #[cfg(feature = $feature)]
