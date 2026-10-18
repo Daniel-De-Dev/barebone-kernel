@@ -1,6 +1,7 @@
 { inputs, ... }: {
   perSystem =
     {
+      config,
       pkgs,
       system,
       lib,
@@ -36,6 +37,8 @@
             loggingFeatures
             ;
 
+          userImage = config.packages.user-init;
+
           loadAddress = board.kernelAddress;
           inherit (board) kernelOffset;
           regionSize = board.kernelRegionSize;
@@ -51,9 +54,11 @@
         }) variants;
     in
     {
-      packages =
-        mkKernelPackages "qemu" boards.qemu
-        // mkKernelPackages "vf2" boards.visionfive2
-        // mkKernelPackages "mangopi" boards.mangopi;
+      packages = {
+        user-init = import ./user.nix { inherit pkgs naersk'; };
+      }
+      // mkKernelPackages "qemu" boards.qemu
+      // mkKernelPackages "vf2" boards.visionfive2
+      // mkKernelPackages "mangopi" boards.mangopi;
     };
 }

@@ -107,7 +107,12 @@
               "Kernel heap ready" \
               "Rust global allocator ready" \
               "Supervisor timer armed" \
-              "Supervisor timer interrupt delivery confirmed"; do
+              "Supervisor timer interrupt delivery confirmed" \
+              "Embedded user process ready" \
+              "Entering user mode" \
+              "Hello from user mode" \
+              "User timer resume confirmed" \
+              "Kernel idle after user process"; do
               if ! grep -Fq "$expected" "$log"; then
                 echo "kernel did not reach: $expected" >&2
                 cat "$log" >&2
@@ -115,8 +120,14 @@
               fi
             done
 
-            if grep -Fq "Unhandled supervisor trap" "$log"; then
-              echo "kernel trapped during startup" >&2
+            if ! grep -Eq 'User process exited \(status=0, user_timer_interrupts=([3-9]|[1-9][0-9]+)\)' "$log"; then
+              echo "user process did not exit successfully after timer delivery" >&2
+              cat "$log" >&2
+              exit 1
+            fi
+
+            if grep -Fq '[ERROR]' "$log"; then
+              echo "kernel reported an error during startup or user execution" >&2
               cat "$log" >&2
               exit 1
             fi

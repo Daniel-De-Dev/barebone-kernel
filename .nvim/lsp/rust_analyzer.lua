@@ -5,6 +5,7 @@ local project_root = vim.fs.dirname(vim.fs.dirname(lsp_dir))
 
 local kernel_root = vim.fs.normalize(project_root .. '/kernel')
 local fdt_root = vim.fs.normalize(project_root .. '/fdt')
+local user_root = vim.fs.normalize(project_root .. '/user')
 
 local function is_under(path, root)
   path = vim.fs.normalize(path)
@@ -21,6 +22,8 @@ return {
       on_dir(kernel_root)
     elseif is_under(path, fdt_root) then
       on_dir(fdt_root)
+    elseif is_under(path, user_root) then
+      on_dir(vim.fs.root(bufnr, 'Cargo.toml'))
     end
   end,
 
@@ -45,7 +48,7 @@ return {
 
     assert(type(current) == 'table')
 
-    if root == kernel_root then
+    if root == kernel_root or is_under(root, user_root) then
       settings['rust-analyzer'] = vim.tbl_deep_extend('force', current, {
         cargo = {
           target = 'riscv64gc-unknown-none-elf',

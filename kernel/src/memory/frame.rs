@@ -88,7 +88,7 @@ impl PhysFrame {
   }
 }
 
-/// A physical frame allocated exclusively for kernel use.
+/// An exclusively allocated physical frame.
 ///
 /// Unlike [`PhysFrame`], this type represents ownership rather than just
 /// describing a physical address range. Instances are created only by a frame

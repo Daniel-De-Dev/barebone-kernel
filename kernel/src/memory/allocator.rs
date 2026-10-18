@@ -20,6 +20,16 @@ pub(crate) enum AllocatorInitError {
   AlreadyInitialized,
 }
 
+/// Failures while borrowing the global paging and frame-allocation state.
+#[derive(Debug)]
+pub(crate) enum MemoryAccessError {
+  /// Another operation currently holds the memory state.
+  Busy,
+
+  /// Memory state has not been installed.
+  NotInitialized,
+}
+
 /// Owned memory-management capabilities.
 struct MemoryState {
   /// Virtual allocation policy and progress.
@@ -124,6 +134,27 @@ static ALLOCATOR: KernelAllocator = KernelAllocator {
   busy: AtomicBool::new(false),
   state: UnsafeCell::new(None),
 };
+
+/// Runs an operation with exclusive paging and frame-allocation access.
+///
+/// Local supervisor interrupts remain masked throughout the callback. The
+/// callback must not allocate through the Rust global allocator, since the
+/// memory state remains held and recursive allocation fails immediately.
+/// Use only on the owning hart with the stored paging root active.
+///
+/// # Errors
+///
+/// Returns an error if state is busy or has not been initialized.
+pub(crate) fn with_paging<R>(
+  operation: impl FnOnce(&mut arch::KernelPaging, &mut BootFrameAllocator<'static>) -> R,
+) -> Result<R, MemoryAccessError> {
+  ALLOCATOR
+    .with_state(|slot| {
+      let state = slot.as_mut().ok_or(MemoryAccessError::NotInitialized)?;
+      Ok(operation(&mut state.paging, &mut state.frames))
+    })
+    .unwrap_or(Err(MemoryAccessError::Busy))
+}
 
 /// Installs owned heap, paging, and physical allocation state exactly once.
 ///

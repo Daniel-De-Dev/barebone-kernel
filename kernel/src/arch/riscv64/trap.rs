@@ -1,12 +1,15 @@
-//! Returning traps on an aligned supervisor stack.
+//! Returning traps and integer-only user entry on aligned supervisor stacks.
 //!
-//! Entry preserves integer registers and trap status on the interrupted stack.
+//! User traps select a supervisor stack through sscratch before storing state.
+//! Supervisor execution keeps sscratch zero and uses its interrupted stack.
 //! Floating-point and vector access is disabled while the handler runs, leaving
 //! that register state untouched. Handlers run with supervisor interrupts masked.
 
 use core::{
   arch::{asm, global_asm},
   mem::{offset_of, size_of},
+  ptr,
+  sync::atomic::{AtomicU64, Ordering},
 };
 
 use crate::{arch, logging};
@@ -23,7 +26,16 @@ const TIMER_INTERRUPT: usize = (1 << 63) | 5;
 /// Illegal-instruction exception encoded in `scause`.
 const ILLEGAL_INSTRUCTION: usize = 2;
 
-/// Saved supervisor execution state at trap entry.
+/// Environment call raised from user mode.
+const USER_ECALL: usize = 8;
+
+/// RV64 user status with supervisor interrupts enabled on privilege return.
+const INITIAL_USER_STATUS: usize = (2 << 32) | (1 << 5);
+
+/// Wrapping count of timer interrupts that interrupted user execution.
+static USER_TICKS: AtomicU64 = AtomicU64::new(0);
+
+/// Saved integer execution state and supervisor trap metadata.
 #[repr(C, align(16))]
 struct TrapFrame {
   /// Integer registers indexed by architectural register number.
@@ -42,9 +54,35 @@ struct TrapFrame {
   value: usize,
 }
 
-// Save every integer register before using it as scratch space. The original
-// stack pointer occupies its architectural register slot. Rust receives an
-// aligned frame and returns with supervisor interrupts still masked.
+/// Integer-only execution state for the first return into user mode.
+pub(crate) struct UserContext {
+  /// Registers and privilege-return state consumed by the trap restore path.
+  frame: TrapFrame,
+}
+
+impl UserContext {
+  /// Prepares zeroed integer registers, an entry address, and a user stack.
+  ///
+  /// Floating-point and vector access start disabled. Mapping validity is
+  /// checked by the caller before this context is entered.
+  pub(crate) const fn new(entry: crate::memory::VirtAddr, stack: crate::memory::VirtAddr) -> Self {
+    let mut registers = [0; 32];
+    registers[2] = stack.as_usize();
+    Self {
+      frame: TrapFrame {
+        registers,
+        epc: entry.as_usize(),
+        status: INITIAL_USER_STATUS,
+        cause: 0,
+        value: 0,
+      },
+    }
+  }
+}
+
+// Stack selection uses only sp and sscratch, preserving every other register.
+// Once the interrupted sp is saved, sscratch is cleared so synchronous traps
+// in the handler retain the current supervisor stack.
 global_asm!(
   r#"
   .section .text
@@ -52,12 +90,22 @@ global_asm!(
   .global __trap_entry
 
 __trap_entry:
+  csrrw sp, sscratch, sp
+  bnez sp, .Luser_stack
+  csrrw sp, sscratch, sp
   addi sp, sp, -{frame_size}
   sd t0, {registers}+8*5(sp)
+  addi t0, sp, {frame_size}
+  j .Lsave_context
+.Luser_stack:
+  addi sp, sp, -{frame_size}
+  sd t0, {registers}+8*5(sp)
+  csrr t0, sscratch
+  csrw sscratch, zero
+.Lsave_context:
+  sd t0, {registers}+8*2(sp)
   sd zero, {registers}+8*0(sp)
   sd ra, {registers}+8*1(sp)
-  addi t0, sp, {frame_size}
-  sd t0, {registers}+8*2(sp)
   sd gp, {registers}+8*3(sp)
   sd tp, {registers}+8*4(sp)
   sd t1, {registers}+8*6(sp)
@@ -103,15 +151,25 @@ __trap_entry:
   .option norelax
   la gp, __global_pointer$
   .option pop
+  mv tp, zero
 
   mv a0, sp
   call {handler}
 
+  .global __trap_restore
+__trap_restore:
   ld t0, {epc}(sp)
   csrw sepc, t0
   ld t0, {status}(sp)
   andi t0, t0, -3
   csrw sstatus, t0
+
+  csrw sscratch, zero
+  andi t0, t0, {supervisor_origin}
+  bnez t0, .Lrestore_registers
+  addi t0, sp, {frame_size}
+  csrw sscratch, t0
+.Lrestore_registers:
 
   ld ra, {registers}+8*1(sp)
   ld gp, {registers}+8*3(sp)
@@ -153,18 +211,73 @@ __trap_entry:
   cause = const offset_of!(TrapFrame, cause),
   value = const offset_of!(TrapFrame, value),
   extension_state_mask = const EXTENSION_STATE_MASK,
+  supervisor_origin = const SUPERVISOR_ORIGIN,
   handler = sym trap_handler,
 );
 
 unsafe extern "C" {
   /// Assembly entry point installed in `stvec`.
   fn __trap_entry();
+
+  /// Restores a `TrapFrame` addressed by sp and returns through sret.
+  fn __trap_restore();
+}
+
+/// Enters user execution using a permanently retained supervisor trap stack.
+///
+/// Instruction fetch is synchronized after loading executable bytes. Local
+/// supervisor delivery is masked before selecting the user restore frame.
+///
+/// # Safety
+///
+/// The context's entry must be mapped executable for user mode and its stack
+/// must be writable user memory. `kernel_stack_top` must be 16-byte-aligned
+/// above a sufficiently sized, exclusively owned, permanently writable
+/// supervisor stack. Its top frame must fit and have no live references.
+/// The installed trap vector and every enabled interrupt handler must be ready
+/// on this hart, with the corresponding page-table root active.
+pub(crate) unsafe fn enter_user(
+  context: UserContext,
+  kernel_stack_top: crate::memory::VirtAddr,
+) -> ! {
+  let frame = ptr::with_exposed_provenance_mut::<TrapFrame>(
+    kernel_stack_top
+      .as_usize()
+      .wrapping_sub(size_of::<TrapFrame>()),
+  );
+  // SAFETY:
+  // The caller supplies exclusive, aligned stack storage covering this frame.
+  // Every field is initialized, and no reference survives the transfer.
+  unsafe {
+    ptr::write(frame, context.frame);
+  }
+
+  // SAFETY:
+  // The caller established user mappings and interrupt readiness. The complete
+  // saved frame occupies the supplied supervisor stack. The non-returning jump
+  // consumes that frame through the common integer-register restore path.
+  unsafe {
+    asm!(
+      "csrci sstatus, 2",
+      "fence.i",
+      "mv sp, {frame}",
+      "j {restore}",
+      frame = in(reg) frame,
+      restore = sym __trap_restore,
+      options(noreturn),
+    );
+  }
+}
+
+/// Returns the wrapping number of timer interrupts delivered from user mode.
+pub(crate) fn user_timer_ticks() -> u64 {
+  USER_TICKS.load(Ordering::Relaxed)
 }
 
 /// Installs a direct supervisor trap vector and masks local interrupt sources.
 ///
-/// Traps must originate in supervisor mode with an ABI-aligned, writable stack
-/// and enough remaining space for a saved frame and the Rust handler.
+/// Supervisor traps require an aligned, writable stack with space for the saved
+/// frame and handler. User entry must supply a separate supervisor stack.
 pub(crate) fn init() {
   #[expect(
     clippy::as_conversions,
@@ -180,6 +293,7 @@ pub(crate) fn init() {
   unsafe {
     asm!(
       "csrw sie, zero",
+      "csrw sscratch, zero",
       "csrw stvec, {address}",
       address = in(reg) address,
       options(nostack),
@@ -192,17 +306,16 @@ pub(crate) fn init() {
   );
 }
 
-/// Handles recoverable supervisor traps or reports an unrecoverable fault.
+/// Dispatches timer interrupts, scalar user syscalls, and fatal exceptions.
 #[expect(
   clippy::as_conversions,
   reason = "assembly labels are compared and stored only as instruction addresses"
 )]
 extern "C" fn trap_handler(frame: &mut TrapFrame) {
-  if frame.status & SUPERVISOR_ORIGIN == 0 {
-    fatal(frame);
-  }
+  let supervisor = frame.status & SUPERVISOR_ORIGIN != 0;
 
-  if frame.cause == ILLEGAL_INSTRUCTION
+  if supervisor
+    && frame.cause == ILLEGAL_INSTRUCTION
     && frame.epc == (super::time::__probe_time_read as *const ()).addr()
   {
     frame.epc = (super::time::__probe_time_unavailable as *const ()).addr();
@@ -214,7 +327,24 @@ extern "C" fn trap_handler(frame: &mut TrapFrame) {
       logging::error!(Timer, "Supervisor timer failed ({error:?})");
       fatal(frame);
     }
+    if !supervisor {
+      USER_TICKS.fetch_add(1, Ordering::Relaxed);
+    }
     return;
+  }
+
+  if !supervisor {
+    if frame.cause == USER_ECALL {
+      // ecall occupies four bytes.
+      let Some(next) = frame.epc.checked_add(4) else {
+        crate::process::fault(frame.cause, frame.epc, frame.value);
+      };
+      frame.epc = next;
+      frame.registers[10] =
+        crate::process::handle_syscall(frame.registers[17], frame.registers[10]);
+      return;
+    }
+    crate::process::fault(frame.cause, frame.epc, frame.value);
   }
 
   fatal(frame);

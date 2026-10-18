@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["fdt", "kernel"]
+members = ["fdt", "kernel", "user/abi", "user/init"]
 
 [workspace.lints.rust]
 unused_mut = "deny"

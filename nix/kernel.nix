@@ -17,6 +17,7 @@
   loadAddress,
   kernelOffset,
   regionSize,
+  userImage,
   release ? true,
   loggingFeatures ? [ ],
 }:
@@ -55,6 +56,7 @@ naersk'.buildPackage {
     ];
 
   CARGO_BUILD_TARGET = rustTarget;
+  USER_IMAGE = "${userImage}/bin/init.bin";
 
   CARGO_TARGET_RISCV64GC_UNKNOWN_NONE_ELF_RUSTFLAGS = lib.concatStringsSep " " [
     "-Clink-arg=-T${linkerScript}"

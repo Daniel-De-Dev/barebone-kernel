@@ -18,7 +18,27 @@ pub(crate) use interrupt::{
 pub(crate) use paging::{BootstrapPaging, KernelPaging, PagingError};
 pub(crate) use time::{init as init_time, ticks as time_ticks};
 pub(crate) use timer::{TimerError, init as init_timer, ticks as timer_ticks};
-pub(crate) use trap::init as init_trap;
+pub(crate) use trap::{UserContext, enter_user, init as init_trap, user_timer_ticks};
+
+/// Parks supervisor execution while keeping configured interrupt delivery enabled.
+///
+/// # Safety
+///
+/// Every unmasked source must have a handler ready on this hart. Execution
+/// must use a valid supervisor stack and hold no interrupt-sensitive borrow.
+/// sscratch must be zero so supervisor traps retain their current stack.
+pub(crate) unsafe fn idle() -> ! {
+  // SAFETY: the caller established readiness and exclusive supervisor stack use.
+  unsafe {
+    enable_interrupts();
+  }
+  loop {
+    // SAFETY: wfi does not change Rust-managed memory or the stack.
+    unsafe {
+      asm!("wfi", options(nomem, nostack));
+    }
+  }
+}
 
 /// Disables supervisor interrupt delivery and parks the current hart indefinitely.
 ///

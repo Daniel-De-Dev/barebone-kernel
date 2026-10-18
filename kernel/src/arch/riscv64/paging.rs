@@ -19,15 +19,16 @@
 mod access;
 mod kernel;
 
-use access::FrameAccess;
-
-pub(crate) use kernel::KernelPaging;
-
+#[cfg(all(feature = "log-debug", feature = "log-paging"))]
+use core::fmt;
 use core::{
   arch::asm,
   ptr,
   sync::atomic::{AtomicBool, Ordering},
 };
+
+use access::FrameAccess;
+pub(crate) use kernel::KernelPaging;
 
 use crate::{
   logging,
@@ -36,9 +37,6 @@ use crate::{
     VirtRange,
   },
 };
-
-#[cfg(all(feature = "log-debug", feature = "log-paging"))]
-use core::fmt;
 
 /// Sign bit of an Sv39 virtual address.
 const SV39_SIGN_BIT: usize = 38;
@@ -93,6 +91,19 @@ const PTE_WRITE: usize = 1 << 2;
 
 /// PTE bit permitting instruction fetches through a leaf mapping.
 const PTE_EXECUTE: usize = 1 << 3;
+
+/// Permits access from user mode when set in a leaf entry.
+const PTE_USER: usize = 1 << 4;
+
+/// Privilege allowed to access a mapped leaf.
+#[derive(Clone, Copy, Debug)]
+enum PagePrivilege {
+  /// Access is restricted to supervisor mode.
+  Supervisor,
+
+  /// Access is permitted from user mode.
+  User,
+}
 
 /// PTE bit recording that a leaf mapping has been accessed.
 const PTE_ACCESSED: usize = 1 << 6;
@@ -535,6 +546,7 @@ impl Sv39PageTable {
         virtual_address,
         frame,
         permissions,
+        PagePrivilege::Supervisor,
         frames,
       )?;
     }
@@ -545,7 +557,8 @@ impl Sv39PageTable {
 
 /// Maps one 4 KiB virtual page to `physical_frame`.
 ///
-/// `permissions` describes supervisor-only access through the leaf.
+/// `permissions` describes read, write, and execute access through the leaf.
+/// `privilege` selects supervisor-only or user-accessible memory.
 /// Valid/accessed state is added automatically, as is the dirty bit for
 /// writable mappings.
 ///
@@ -560,6 +573,7 @@ fn map_page(
   virtual_address: VirtAddr,
   physical_frame: PhysFrame,
   permissions: PagePermissions,
+  privilege: PagePrivilege,
   frames: &mut impl FrameAllocator,
 ) -> Result<(), PagingError> {
   let address = virtual_address.as_usize();
@@ -575,6 +589,10 @@ fn map_page(
   let permissions = permission_bits(permissions);
 
   let mut flags = PTE_VALID | PTE_ACCESSED | permissions;
+
+  if matches!(privilege, PagePrivilege::User) {
+    flags |= PTE_USER;
+  }
 
   if permissions & PTE_WRITE != 0 {
     flags |= PTE_DIRTY;
@@ -602,7 +620,7 @@ fn map_page(
 
   logging::trace!(
     Paging,
-    "installed leaf va={address:#x} -> pa={:#x} size={PAGE_SIZE} perms={} \
+    "installed leaf va={address:#x} -> pa={:#x} size={PAGE_SIZE} perms={} privilege={privilege:?} \
      table_pa={:#x} index={vpn0} pte={entry:#x}",
     physical_frame.start_address(),
     PtePermissions(flags),
@@ -612,7 +630,7 @@ fn map_page(
   Ok(())
 }
 
-/// Encodes the supported supervisor-only permissions as Sv39 leaf bits.
+/// Encodes read, write, and execute permissions as Sv39 leaf bits.
 const fn permission_bits(permissions: PagePermissions) -> usize {
   match permissions {
     PagePermissions::ReadOnly => PTE_READ,
@@ -624,6 +642,12 @@ const fn permission_bits(permissions: PagePermissions) -> usize {
 /// Errors produced while inspecting or modifying Sv39 paging state.
 #[derive(Debug)]
 pub(crate) enum PagingError {
+  /// A user mapping requested the null page or an address outside the lower half.
+  VirtualAddressNotUser {
+    /// Address outside the permitted user range.
+    address: usize,
+  },
+
   /// A root-table entry required for a new mapping was not empty.
   RootEntryInUse {
     /// Index of the occupied root-table entry.

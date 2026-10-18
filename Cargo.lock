@@ -11,4 +11,16 @@ name = "kernel"
 version = "0.1.0"
 dependencies = [
  "fdt",
+ "user-abi",
+]
+
+[[package]]
+name = "user-abi"
+version = "0.1.0"
+
+[[package]]
+name = "user-init"
+version = "0.1.0"
+dependencies = [
+ "user-abi",
 ]

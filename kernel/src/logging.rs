@@ -14,8 +14,9 @@
 //! After the one-time architecture probe, records include a `time` field only
 //! if the current hart can read the time CSR.
 
-use crate::{arch, console::Console};
 use core::fmt::{self, Write};
+
+use crate::{arch, console::Console};
 
 /// Severity level of a log record.
 #[derive(Clone, Copy)]
@@ -71,6 +72,12 @@ pub(super) enum Target {
 
   /// Trap entry, dispatch, and unrecoverable faults.
   Trap,
+
+  /// Executable loading and process lifecycle.
+  Process,
+
+  /// User requests and syscall argument validation.
+  Syscall,
 }
 
 impl fmt::Display for Target {
@@ -81,6 +88,8 @@ impl fmt::Display for Target {
       Self::Paging => "paging",
       Self::Timer => "timer",
       Self::Trap => "trap",
+      Self::Process => "process",
+      Self::Syscall => "syscall",
     };
 
     f.pad(target)
@@ -113,7 +122,7 @@ pub(super) fn write(level: Level, target: Target, file: &str, line: u32, args: f
 
   let _write_result = writeln!(
     console,
-    "[{level:<5}][{target:<6}]{time} {file:>32}:{line:<4} | {args}"
+    "[{level:<5}][{target:<7}]{time} {file:>32}:{line:<4} | {args}"
   );
 }
 
@@ -146,6 +155,12 @@ macro_rules! verbose {
   };
   (Trap, $level:ident, $($arg:tt)+) => {
     $crate::logging::verbose!("log-trap", $level, Trap, $($arg)+)
+  };
+  (Process, $level:ident, $($arg:tt)+) => {
+    $crate::logging::verbose!("log-process", $level, Process, $($arg)+)
+  };
+  (Syscall, $level:ident, $($arg:tt)+) => {
+    $crate::logging::verbose!("log-syscall", $level, Syscall, $($arg)+)
   };
   ($feature:literal, $level:ident, $target:ident, $($arg:tt)+) => {{
     #[cfg(feature = $feature)]
@@ -196,4 +211,10 @@ macro_rules! error {
   };
 }
 
-pub(super) use {debug, error, info, record, trace, verbose, warning as warn};
+pub(super) use debug;
+pub(super) use error;
+pub(super) use info;
+pub(super) use record;
+pub(super) use trace;
+pub(super) use verbose;
+pub(super) use warning as warn;

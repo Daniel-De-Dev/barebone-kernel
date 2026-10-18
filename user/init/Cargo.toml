@@ -1,0 +1,16 @@
+[package]
+name = "user-init"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+user-abi = { path = "../abi" }
+
+[[bin]]
+name = "init"
+path = "src/main.rs"
+test = false
+bench = false
+
+[lints]
+workspace = true

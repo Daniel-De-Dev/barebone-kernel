@@ -16,11 +16,13 @@ mod frame;
 mod heap;
 
 pub(crate) use address::{PhysAddr, VirtAddr};
-pub(crate) use allocator::{AllocatorInitError, initialize as init_allocator};
-pub(crate) use frame::{AllocatedFrame, BootFrameAllocator, FrameAllocator, PhysFrame};
+pub(crate) use allocator::{
+  AllocatorInitError, MemoryAccessError, initialize as init_allocator, with_paging,
+};
+pub(crate) use frame::{AllocatedFrame, BootFrameAllocator, FRAME_SIZE, FrameAllocator, PhysFrame};
 pub(crate) use heap::{HeapBacking, HeapError, KernelHeap};
 
-/// Access permitted through a supervisor-only virtual page mapping.
+/// Read, write, and execute access permitted through a virtual page mapping.
 #[derive(Clone, Copy, Debug)]
 #[expect(
   clippy::enum_variant_names,

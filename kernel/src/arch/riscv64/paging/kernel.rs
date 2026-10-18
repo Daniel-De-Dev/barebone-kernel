@@ -3,11 +3,13 @@
 
 use core::{fmt, ptr};
 
+#[cfg(all(feature = "log-debug", feature = "log-paging"))]
+use super::PtePermissions;
 use super::{
   BOOT_FRAME_WINDOW_BASE, BootstrapPaging, FRAME_WINDOW_PTE_FLAGS, FrameAccess, GIGAPAGE_SHIFT,
-  GIGAPAGE_SIZE, MEGAPAGE_SHIFT, PAGE_MASK, PAGE_SHIFT, PAGE_SIZE, PagingError,
-  SV39_HIGH_HALF_BASE, Sv39PageTable, VPN_MASK, activate_root, flush_address, flush_all, map_page,
-  page_table_entry,
+  GIGAPAGE_SIZE, MEGAPAGE_SHIFT, PAGE_MASK, PAGE_SHIFT, PAGE_SIZE, PagePrivilege, PagingError,
+  SV39_HIGH_HALF_BASE, SV39_LOW_HALF_END, Sv39PageTable, VPN_MASK, activate_root, flush_address,
+  flush_all, map_page, page_table_entry,
 };
 use crate::{
   logging,
@@ -16,9 +18,6 @@ use crate::{
     PagePermissions, PhysAddr, PhysFrame, PhysRange, VirtAddr, VirtRange,
   },
 };
-
-#[cfg(all(feature = "log-debug", feature = "log-paging"))]
-use super::PtePermissions;
 
 /// Virtual page mapping the L0 table that controls the kernel frame window.
 ///
@@ -202,6 +201,43 @@ impl BootstrapPaging {
 }
 
 impl KernelPaging {
+  /// Maps an owned frame at one previously unmapped lower-half user page.
+  ///
+  /// The null page is excluded. Missing tables are allocated and zeroed, and
+  /// local translations are synchronized even after partial failure. Existing
+  /// leaves are never replaced. Data and table frames remain allocated.
+  /// Use only on the owning hart with this root active and supervisor interrupts
+  /// disabled. No concurrent access to the tables or frame window is permitted.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error for an invalid or unaligned user address, an occupied
+  /// page, malformed tables, or unavailable physical frames or frame access.
+  pub(crate) fn map_user_page(
+    &mut self,
+    virtual_address: VirtAddr,
+    frame: AllocatedFrame,
+    permissions: PagePermissions,
+    frames: &mut impl FrameAllocator,
+  ) -> Result<(), PagingError> {
+    let address = virtual_address.as_usize();
+    if !(PAGE_SIZE..SV39_LOW_HALF_END).contains(&address) {
+      return Err(PagingError::VirtualAddressNotUser { address });
+    }
+
+    let result = map_page(
+      self.root.frame(),
+      self,
+      virtual_address,
+      frame.into_frame(),
+      permissions,
+      PagePrivilege::User,
+      frames,
+    );
+    flush_all();
+    result
+  }
+
   /// Claims the fixed heap reservation and backs its highest page.
   ///
   /// The root slot must be empty. Once claimed, ordinary `map_page` calls cannot
@@ -328,6 +364,7 @@ impl KernelPaging {
       virtual_address,
       frame.into_frame(),
       permissions,
+      PagePrivilege::Supervisor,
       frames,
     );
 
@@ -515,6 +552,7 @@ impl Sv39PageTable {
       VirtAddr::new(FIXMAP_TABLE_BASE),
       level_0,
       PagePermissions::ReadWrite,
+      PagePrivilege::Supervisor,
       frames,
     )?;
 

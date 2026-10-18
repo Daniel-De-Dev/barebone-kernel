@@ -5,6 +5,8 @@ let
     "log-paging"
     "log-timer"
     "log-trap"
+    "log-process"
+    "log-syscall"
   ];
 
   levelFeatures = {

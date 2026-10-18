@@ -16,6 +16,7 @@ mod console;
 mod firmware;
 mod logging;
 mod memory;
+mod process;
 
 use core::{alloc::Layout, num::NonZeroU32, panic::PanicInfo, time::Duration};
 
@@ -185,8 +186,18 @@ extern "C" fn main(hart_id: usize, dtb: usize) -> ! {
   run_kernel(timebase_hz, boot_interrupts)
 }
 
-/// Arms a periodic timer and confirms repeated interrupt delivery before idling.
+/// Loads a user process, confirms timer delivery, and enters user execution.
 fn run_kernel(timebase_hz: NonZeroU32, boot_interrupts: arch::InterruptGuard) -> ! {
+  let process = match process::load_init() {
+    Ok(process) => process,
+    Err(error) => {
+      logging::error!(
+        Process,
+        "Failed to load embedded user process ({error:?}), halting"
+      );
+      arch::halt();
+    }
+  };
   let period = Duration::from_millis(10);
 
   // SAFETY:
@@ -224,9 +235,11 @@ fn run_kernel(timebase_hz: NonZeroU32, boot_interrupts: arch::InterruptGuard) ->
 
   logging::info!(Timer, "Supervisor timer interrupt delivery confirmed");
 
-  loop {
-    core::hint::spin_loop();
-  }
+  // SAFETY:
+  // Loading installed the user mappings in the still-active root on this sole
+  // hart. Its trap vector is installed, timer delivery was confirmed, and no
+  // memory-state or frame-window borrow remains live.
+  unsafe { process.run() }
 }
 
 /// Reads a non-zero, 32-bit CPU timebase frequency from the device tree.
