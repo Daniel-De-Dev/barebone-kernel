@@ -1,0 +1,13 @@
+/*
+ * Allwinner D1 core-local software and machine timer interrupts.
+ * Source: https://mail-index.netbsd.org/pkgsrc-wip-changes/2025/10/13/msg034515.html
+ */
+/ {
+  soc {
+    clint: timer@14000000 {
+      compatible = "allwinner,sun20i-d1-clint", "thead,c900-clint";
+      reg = <0x14000000 0xc000>;
+      interrupts-extended = <&cpu0_intc 3>, <&cpu0_intc 7>;
+    };
+  };
+};

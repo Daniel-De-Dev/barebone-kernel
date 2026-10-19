@@ -15,6 +15,7 @@
 
       mangoPiDtbName = "mangopi-mq-pro.dtb";
       mangoPiDtsiName = "barebone-memory.dtsi";
+      mangoPiClintDtsiName = "barebone-clint.dtsi";
 
       /*
         Build the hardware DTB passed to OpenSBI and the kernel.
@@ -25,6 +26,9 @@
         The upstream board DTS does not contain a DRAM memory node. Since the FEL
         path initializes DRAM before entering OpenSBI, the known DRAM region is
         injected from the board memory map before compiling the hardware DTB.
+
+        The D1 core-local interrupt controller is described explicitly so
+        firmware can discover its machine timer.
 
         Source:
         https://github.com/smaeul/u-boot/blob/2e89b706f5c956a70c989cd31665f1429e9a0b48/arch/riscv/dts/sun20i-d1-mangopi-mq-pro.dts
@@ -41,11 +45,15 @@
             arch/riscv/dts/sun20i-d1-mangopi-mq-pro.dts \
             --replace-fail \
               '#include "sun20i-common-regulators.dtsi"' \
-              $'#include "sun20i-common-regulators.dtsi"\n#include "${mangoPiDtsiName}"'
+              $'#include "sun20i-common-regulators.dtsi"\n#include "${mangoPiDtsiName}"\n#include "${mangoPiClintDtsiName}"'
 
           install -Dm0644 \
             ${./templates/mangopi-memory.dtsi.in} \
             arch/riscv/dts/${mangoPiDtsiName}
+
+          install -Dm0644 \
+            ${./templates/mangopi-clint.dtsi} \
+            arch/riscv/dts/${mangoPiClintDtsiName}
 
           substituteInPlace arch/riscv/dts/${mangoPiDtsiName} \
             --replace-fail '@dramUnitAddress@' '${lib.toHexString board.dramBase}' \
